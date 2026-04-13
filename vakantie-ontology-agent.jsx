@@ -1,0 +1,458 @@
+import { useState, useRef, useEffect, useCallback } from "react";
+
+const createDB = () => ({
+  klanten: [
+    { klant_id:1, naam:"Anna de Vries",    email:"anna@example.nl",   loyalty_punten:1250, lid_sinds:"2021-03-15" },
+    { klant_id:2, naam:"Pieter Janssen",   email:"pieter@example.nl", loyalty_punten:340,  lid_sinds:"2023-06-01" },
+    { klant_id:3, naam:"Sofia Martins",    email:"sofia@example.nl",  loyalty_punten:2870, lid_sinds:"2019-11-20" },
+    { klant_id:4, naam:"Lars van den Berg",email:"lars@example.nl",   loyalty_punten:0,    lid_sinds:"2024-01-10" },
+  ],
+  bestemmingen: [
+    { bestemming_id:1, naam:"Barcelona", land:"Spanje",    klimaat:"Mediterraan", score:9.2 },
+    { bestemming_id:2, naam:"Bali",      land:"Indonesië", klimaat:"Tropisch",    score:9.5 },
+    { bestemming_id:3, naam:"Marrakech", land:"Marokko",   klimaat:"Droog",       score:8.7 },
+    { bestemming_id:4, naam:"New York",  land:"USA",       klimaat:"Gematigd",    score:9.0 },
+  ],
+  hotels: [
+    { hotel_id:1, naam:"Hotel Arts",        bestemming_id:1, sterren:5, prijs:320, kamers:12 },
+    { hotel_id:2, naam:"Catalonia Square",  bestemming_id:1, sterren:4, prijs:145, kamers:8  },
+    { hotel_id:3, naam:"COMO Uma Ubud",     bestemming_id:2, sterren:5, prijs:280, kamers:6  },
+    { hotel_id:4, naam:"Komaneka at Bisma", bestemming_id:2, sterren:4, prijs:195, kamers:15 },
+    { hotel_id:5, naam:"La Mamounia",       bestemming_id:3, sterren:5, prijs:410, kamers:3  },
+    { hotel_id:6, naam:"The Plaza",         bestemming_id:4, sterren:5, prijs:895, kamers:20 },
+  ],
+  boekingen: [
+    { boeking_id:1, klant_id:1, hotel_id:1, check_in:"2025-07-15", check_out:"2025-07-22", personen:2, status:"bevestigd",     prijs:2240 },
+    { boeking_id:2, klant_id:3, hotel_id:3, check_in:"2025-08-01", check_out:"2025-08-10", personen:2, status:"bevestigd",     prijs:2520 },
+    { boeking_id:3, klant_id:2, hotel_id:2, check_in:"2025-06-20", check_out:"2025-06-27", personen:1, status:"geannuleerd",   prijs:1015 },
+    { boeking_id:4, klant_id:3, hotel_id:6, check_in:"2025-12-26", check_out:"2026-01-02", personen:2, status:"in_behandeling",prijs:6265 },
+  ],
+});
+
+const CLASSES = [
+  { id:"vakantie:Klant",      label:"Klant",      icon:"👤", table:"klanten",      pk:"klant_id",      color:"#f97316", super:"foaf:Person" },
+  { id:"vakantie:Bestemming", label:"Bestemming", icon:"🗺️", table:"bestemmingen", pk:"bestemming_id", color:"#22c55e", super:"schema:Place" },
+  { id:"vakantie:Hotel",      label:"Hotel",      icon:"🏨", table:"hotels",        pk:"hotel_id",      color:"#3b82f6", super:"schema:LodgingBusiness" },
+  { id:"vakantie:Boeking",    label:"Boeking",    icon:"📋", table:"boekingen",     pk:"boeking_id",    color:"#a855f7", super:"schema:Reservation" },
+];
+const RELATIONS = [
+  { from:"vakantie:Klant",   to:"vakantie:Boeking",    label:"heeftBoeking" },
+  { from:"vakantie:Boeking", to:"vakantie:Hotel",      label:"isGeboektIn"  },
+  { from:"vakantie:Hotel",   to:"vakantie:Bestemming", label:"isGevestigdIn"},
+];
+const NODE = { "vakantie:Klant":{x:60,y:55}, "vakantie:Boeking":{x:190,y:140}, "vakantie:Hotel":{x:320,y:55}, "vakantie:Bestemming":{x:320,y:230} };
+
+const TOOLS = [
+  { name:"query_table", description:"Query a database table via the ontology mapping.",
+    input_schema:{ type:"object", properties:{ table:{type:"string",enum:["klanten","bestemmingen","hotels","boekingen"]}, filters:{type:"object"} }, required:["table"] } },
+  { name:"create_boeking", description:"Create a new vakantie:Boeking. Auto-calculates price, decrements hotel kamers.",
+    input_schema:{ type:"object", properties:{ klant_id:{type:"number"}, hotel_id:{type:"number"}, check_in:{type:"string"}, check_out:{type:"string"}, personen:{type:"number"} }, required:["klant_id","hotel_id","check_in","check_out","personen"] } },
+  { name:"cancel_boeking", description:"Cancel a boeking (→ geannuleerd), restore hotel availability.",
+    input_schema:{ type:"object", properties:{ boeking_id:{type:"number"} }, required:["boeking_id"] } },
+  { name:"update_loyalty", description:"Add or subtract loyalty points from a klant.",
+    input_schema:{ type:"object", properties:{ klant_id:{type:"number"}, delta:{type:"number"} }, required:["klant_id","delta"] } },
+];
+
+const QUICK = [
+  { label:"📋 Boekingen Sofia",    text:"Toon alle boekingen van Sofia Martins (klant 3)." },
+  { label:"🏖️ Hotels Bali",        text:"Welke hotels in Bali zijn beschikbaar?" },
+  { label:"➕ Boek voor Lars",     text:"Boek voor Lars van den Berg (klant 4) het Komaneka at Bisma (hotel 4) in Bali van 15 september tot 22 september 2025 voor 2 personen." },
+  { label:"❌ Annuleer boeking 4", text:"Annuleer boeking 4 van Sofia Martins." },
+  { label:"⭐ Punten Anna",        text:"Geef Anna de Vries (klant 1) 500 bonus loyalty punten." },
+];
+
+function runTool(name, input, db, setDb, flash) {
+  const snap = db;
+  if (name === "query_table") {
+    const { table, filters = {} } = input;
+    let rows = snap[table] || [];
+    if (Object.keys(filters).length) rows = rows.filter(r => Object.entries(filters).every(([k,v]) => String(r[k])===String(v)));
+    const pkMap = {klanten:"klant_id",bestemmingen:"bestemming_id",hotels:"hotel_id",boekingen:"boeking_id"};
+    flash(table, rows.map(r => r[pkMap[table]]));
+    return { ok:true, count:rows.length, rows };
+  }
+  if (name === "create_boeking") {
+    const { klant_id, hotel_id, check_in, check_out, personen } = input;
+    const hotel = snap.hotels.find(h => h.hotel_id === hotel_id);
+    if (!hotel) return { ok:false, error:`Hotel ${hotel_id} niet gevonden` };
+    if (hotel.kamers < 1) return { ok:false, error:"Geen kamers beschikbaar" };
+    const nights = Math.ceil((new Date(check_out)-new Date(check_in))/86400000);
+    if (nights <= 0) return { ok:false, error:"Ongeldige datums" };
+    const prijs = nights * hotel.prijs;
+    const newId = Math.max(...snap.boekingen.map(b=>b.boeking_id),0)+1;
+    const rec = { boeking_id:newId, klant_id, hotel_id, check_in, check_out, personen, status:"bevestigd", prijs };
+    const next = { ...snap,
+      boekingen:[...snap.boekingen, rec],
+      hotels:snap.hotels.map(h=>h.hotel_id===hotel_id?{...h,kamers:h.kamers-1}:h) };
+    setDb(next);
+    flash("boekingen",[newId]); flash("hotels",[hotel_id]);
+    return { ok:true, created:rec, nachten:nights };
+  }
+  if (name === "cancel_boeking") {
+    const { boeking_id } = input;
+    const b = snap.boekingen.find(x=>x.boeking_id===boeking_id);
+    if (!b) return { ok:false, error:`Boeking ${boeking_id} niet gevonden` };
+    const next = { ...snap,
+      boekingen:snap.boekingen.map(x=>x.boeking_id===boeking_id?{...x,status:"geannuleerd"}:x),
+      hotels:snap.hotels.map(h=>h.hotel_id===b.hotel_id?{...h,kamers:h.kamers+1}:h) };
+    setDb(next);
+    flash("boekingen",[boeking_id]); flash("hotels",[b.hotel_id]);
+    return { ok:true, geannuleerd:boeking_id };
+  }
+  if (name === "update_loyalty") {
+    const { klant_id, delta } = input;
+    const k = snap.klanten.find(x=>x.klant_id===klant_id);
+    if (!k) return { ok:false, error:`Klant ${klant_id} niet gevonden` };
+    const nieuw = Math.max(0, k.loyalty_punten + delta);
+    setDb({...snap, klanten:snap.klanten.map(x=>x.klant_id===klant_id?{...x,loyalty_punten:nieuw}:x)});
+    flash("klanten",[klant_id]);
+    return { ok:true, klant_id, nieuw_saldo:nieuw };
+  }
+  return { ok:false, error:`Onbekende tool: ${name}` };
+}
+
+function OntologyGraph({ active }) {
+  return (
+    <svg viewBox="0 20 390 280" style={{width:"100%",height:"220px"}}>
+      <defs>
+        <marker id="arr" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
+          <path d="M0,0 L7,3.5 L0,7 Z" fill="#374151"/>
+        </marker>
+        <marker id="arr-active" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
+          <path d="M0,0 L7,3.5 L0,7 Z" fill="#f97316"/>
+        </marker>
+      </defs>
+      {RELATIONS.map(r => {
+        const f=NODE[r.from], t=NODE[r.to];
+        const dx=t.x-f.x, dy=t.y-f.y, len=Math.sqrt(dx*dx+dy*dy);
+        const ux=dx/len, uy=dy/len, pad=28;
+        const on = active.has(r.from)||active.has(r.to);
+        return (
+          <g key={r.label}>
+            <line x1={f.x+ux*pad} y1={f.y+uy*pad} x2={t.x-ux*pad} y2={t.y-uy*pad}
+              stroke={on?"#f97316":"#1f2937"} strokeWidth={on?2:1.5}
+              strokeDasharray={on?"none":"4,3"} markerEnd={`url(#arr${on?"-active":""})`}
+              style={{transition:"all 0.4s"}}/>
+            <text x={(f.x+t.x)/2} y={(f.y+t.y)/2-5} textAnchor="middle" fontSize="8"
+              fill={on?"#f97316":"#4b5563"} fontFamily="monospace">{r.label}</text>
+          </g>
+        );
+      })}
+      {CLASSES.map(c => {
+        const p=NODE[c.id], on=active.has(c.id);
+        return (
+          <g key={c.id}>
+            <circle cx={p.x} cy={p.y} r={26} fill={on?c.color+"22":"#0f172a"}
+              stroke={on?c.color:"#1f2937"} strokeWidth={on?2:1.5}
+              style={{filter:on?`drop-shadow(0 0 10px ${c.color})`:"none",transition:"all 0.4s"}}/>
+            <text x={p.x} y={p.y-3} textAnchor="middle" fontSize="14">{c.icon}</text>
+            <text x={p.x} y={p.y+13} textAnchor="middle" fontSize="8" fontWeight="600"
+              fill={on?c.color:"#6b7280"} fontFamily="monospace">{c.label}</text>
+            <rect x={p.x-26} y={p.y+20} width="52" height="12" rx="3"
+              fill={on?c.color+"22":"#111827"} stroke={on?c.color:"#1f2937"} strokeWidth="1"/>
+            <text x={p.x} y={p.y+28} textAnchor="middle" fontSize="7"
+              fill={on?c.color:"#374151"} fontFamily="monospace">db:{c.table}</text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+function DataTable({ rows, flash, pk }) {
+  if (!rows.length) return <div style={{color:"#4b5563",fontSize:"11px",padding:"8px"}}>Geen data</div>;
+  const cols = Object.keys(rows[0]);
+  return (
+    <div style={{overflowX:"auto",fontSize:"10px",fontFamily:"monospace"}}>
+      <table style={{width:"100%",borderCollapse:"collapse",minWidth:"400px"}}>
+        <thead>
+          <tr>{cols.map(c=><th key={c} style={{padding:"4px 8px",textAlign:"left",color:"#4b5563",fontWeight:500,whiteSpace:"nowrap",borderBottom:"1px solid #1f2937"}}>{c}</th>)}</tr>
+        </thead>
+        <tbody>
+          {rows.map((row,i)=>{
+            const isFlash = flash.has(row[pk]);
+            return (
+              <tr key={i} style={{background:isFlash?"rgba(249,115,22,0.15)":i%2?"rgba(255,255,255,0.02)":"transparent",borderLeft:isFlash?"2px solid #f97316":"2px solid transparent",transition:"all 0.5s"}}>
+                {cols.map(c=>(
+                  <td key={c} style={{padding:"3px 8px",color:c===pk?"#f97316":"#d1d5db",whiteSpace:"nowrap"}}>
+                    {c==="status"
+                      ? <span style={{padding:"1px 6px",borderRadius:"12px",fontSize:"9px",background:row[c]==="bevestigd"?"rgba(34,197,94,0.2)":row[c]==="geannuleerd"?"rgba(239,68,68,0.2)":"rgba(234,179,8,0.2)",color:row[c]==="bevestigd"?"#4ade80":row[c]==="geannuleerd"?"#f87171":"#fbbf24"}}>{row[c]}</span>
+                      : c==="sterren" ? "★".repeat(row[c])
+                      : c==="prijs"||c==="loyalty_punten" ? `€${Number(row[c]).toLocaleString("nl-NL")}`
+                      : String(row[c])}
+                  </td>
+                ))}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+export default function App() {
+  const [db, setDb] = useState(createDB());
+  const dbRef = useRef(db);
+  useEffect(()=>{dbRef.current=db;},[db]);
+
+  const [tab, setTab] = useState("klanten");
+  const [flashMap, setFlashMap] = useState({});
+  const [activeClasses, setActiveClasses] = useState(new Set());
+  const [traces, setTraces] = useState([]);
+  const [msgs, setMsgs] = useState([{role:"assistant",text:"Hallo! Ik ben de Vakantie database-agent. Ik gebruik de OWL-ontologie om queries te vertalen naar database-acties. Probeer een snelkoppeling of stel een vraag!"}]);
+  const [history, setHistory] = useState([]);
+  const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const chatEnd = useRef(null);
+  const [view, setView] = useState("chat"); // "chat" | "db" | "onto"
+
+  useEffect(()=>{chatEnd.current?.scrollIntoView({behavior:"smooth"});},[msgs,loading]);
+
+  const flash = useCallback((table,pks)=>{
+    const cls = CLASSES.find(c=>c.table===table);
+    if (cls) {
+      setActiveClasses(p=>new Set([...p,cls.id]));
+      setTimeout(()=>setActiveClasses(p=>{const n=new Set(p);n.delete(cls.id);return n;}),2000);
+    }
+    setTab(table);
+    setFlashMap(p=>({...p,[table]:new Set(pks)}));
+    setTimeout(()=>setFlashMap(p=>({...p,[table]:new Set()})),2500);
+  },[]);
+
+  const systemPrompt = useCallback(()=>`
+Je bent een database-agent voor Vakantie BV. Je gebruikt de OWL-ontologie om queries te begrijpen.
+
+## ONTOLOGIE
+vakantie:Klant       → tabel klanten      (foaf:Person)
+vakantie:Bestemming  → tabel bestemmingen (schema:Place)
+vakantie:Hotel       → tabel hotels       (schema:LodgingBusiness)
+vakantie:Boeking     → tabel boekingen    (schema:Reservation)
+
+Relaties:
+- vakantie:Klant vakantie:heeftBoeking vakantie:Boeking [via klant_id]
+- vakantie:Boeking vakantie:isGeboektIn vakantie:Hotel [via hotel_id]
+- vakantie:Hotel vakantie:isGevestigdIn vakantie:Bestemming [via bestemming_id]
+
+## DATABASE
+${JSON.stringify(dbRef.current,null,2)}
+
+## REGELS
+- totaalprijs = nachten × prijs_per_nacht
+- Controleer kamers vóór boeking
+- +10 loyalty punten per €100 bij nieuwe boekingen
+- Antwoord in het Nederlands
+`,[]);
+
+  const send = async(text)=>{
+    if(!text.trim()||loading) return;
+    setLoading(true); setInput("");
+    setMsgs(p=>[...p,{role:"user",text}]);
+    let cur=[...history,{role:"user",content:text}];
+    let finalText="";
+    try {
+      while(true){
+        const res=await fetch("https://api.anthropic.com/v1/messages",{
+          method:"POST",
+          headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,system:systemPrompt(),tools:TOOLS,messages:cur})
+        });
+        if(!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data=await res.json();
+        cur=[...cur,{role:"assistant",content:data.content}];
+        const toolBlocks=data.content.filter(b=>b.type==="tool_use");
+        const textBlocks=data.content.filter(b=>b.type==="text");
+        if(textBlocks.length) finalText=textBlocks.map(b=>b.text).join("\n");
+        if(!toolBlocks.length||data.stop_reason==="end_turn") break;
+        const results=toolBlocks.map(tb=>{
+          const result=runTool(tb.name,tb.input,dbRef.current,(next)=>{setDb(next);dbRef.current=next;},flash);
+          setTraces(p=>[...p,{name:tb.name,input:tb.input,result,ok:result.ok}]);
+          return{type:"tool_result",tool_use_id:tb.id,content:JSON.stringify(result)};
+        });
+        cur=[...cur,{role:"user",content:results}];
+      }
+    } catch(e){ finalText=`Fout: ${e.message}`; }
+    if(finalText) setMsgs(p=>[...p,{role:"assistant",text:finalText}]);
+    setHistory(cur);
+    setLoading(false);
+  };
+
+  const pkMap={klanten:"klant_id",bestemmingen:"bestemming_id",hotels:"hotel_id",boekingen:"boeking_id"};
+
+  return (
+    <div style={{height:"100vh",background:"#060b14",color:"#e5e7eb",display:"flex",flexDirection:"column",fontFamily:"'Segoe UI',system-ui,sans-serif",overflow:"hidden"}}>
+      <style>{`
+        @keyframes bounce{0%,80%,100%{transform:translateY(0)}40%{transform:translateY(-5px)}}
+        .dot{display:inline-block;width:6px;height:6px;borderRadius:50%;background:#f97316;animation:bounce 1.2s infinite}
+        .dot:nth-child(2){animation-delay:.2s}.dot:nth-child(3){animation-delay:.4s}
+        button:hover{opacity:0.85}
+        ::-webkit-scrollbar{width:3px;height:3px}::-webkit-scrollbar-thumb{background:#374151}
+      `}</style>
+
+      {/* HEADER */}
+      <div style={{borderBottom:"1px solid #111827",padding:"0 16px",display:"flex",alignItems:"center",gap:"12px",height:"48px",flexShrink:0}}>
+        <span style={{fontSize:"20px"}}>🌊</span>
+        <div>
+          <div style={{fontSize:"13px",fontWeight:700,color:"#f9fafb"}}>Vakantie BV</div>
+          <div style={{fontSize:"9px",color:"#4b5563",fontFamily:"monospace"}}>ONTOLOGY-DRIVEN AGENT LAYER</div>
+        </div>
+        <div style={{marginLeft:"auto",display:"flex",gap:"6px"}}>
+          {["chat","db","onto"].map(v=>(
+            <button key={v} onClick={()=>setView(v)} style={{padding:"4px 12px",borderRadius:"20px",border:"1px solid",borderColor:view===v?"#f97316":"#1f2937",background:view===v?"rgba(249,115,22,0.15)":"transparent",color:view===v?"#f97316":"#4b5563",fontSize:"11px",cursor:"pointer"}}>
+              {v==="chat"?"💬 Agent":v==="db"?"🗄️ Database":"🕸️ Ontologie"}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* CHAT VIEW */}
+      {view==="chat" && (
+        <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
+          <div style={{padding:"8px 12px",borderBottom:"1px solid #111827",display:"flex",flexWrap:"wrap",gap:"4px"}}>
+            {QUICK.map(q=>(
+              <button key={q.label} onClick={()=>send(q.text)} disabled={loading}
+                style={{padding:"3px 10px",borderRadius:"20px",border:"1px solid #1f2937",background:"rgba(249,115,22,0.06)",color:"#9ca3af",fontSize:"10px",cursor:"pointer",fontFamily:"monospace"}}>
+                {q.label}
+              </button>
+            ))}
+          </div>
+          <div style={{flex:1,overflowY:"auto",padding:"16px 12px"}}>
+            {msgs.map((m,i)=>(
+              <div key={i} style={{display:"flex",justifyContent:m.role==="user"?"flex-end":"flex-start",marginBottom:"12px"}}>
+                {m.role==="assistant"&&<div style={{width:"26px",height:"26px",borderRadius:"50%",background:"linear-gradient(135deg,#f97316,#dc2626)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"12px",marginRight:"8px",flexShrink:0,marginTop:"2px"}}>🤖</div>}
+                <div style={{maxWidth:"80%",padding:"10px 14px",borderRadius:m.role==="user"?"16px 16px 4px 16px":"16px 16px 16px 4px",background:m.role==="user"?"linear-gradient(135deg,#ea580c,#c2410c)":"rgba(255,255,255,0.05)",border:m.role==="user"?"none":"1px solid #1f2937",fontSize:"12px",lineHeight:"1.6",whiteSpace:"pre-wrap"}}>
+                  {m.text}
+                </div>
+              </div>
+            ))}
+            {loading&&(
+              <div style={{display:"flex",alignItems:"center",gap:"8px",marginBottom:"12px"}}>
+                <div style={{width:"26px",height:"26px",borderRadius:"50%",background:"linear-gradient(135deg,#f97316,#dc2626)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"12px"}}>🤖</div>
+                <div style={{padding:"10px 16px",background:"rgba(255,255,255,0.05)",border:"1px solid #1f2937",borderRadius:"16px 16px 16px 4px",display:"flex",gap:"4px"}}>
+                  <span className="dot"/><span className="dot"/><span className="dot"/>
+                </div>
+              </div>
+            )}
+            <div ref={chatEnd}/>
+          </div>
+          <div style={{padding:"12px",borderTop:"1px solid #111827"}}>
+            <div style={{display:"flex",gap:"8px"}}>
+              <textarea value={input} onChange={e=>setInput(e.target.value)}
+                onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();send(input);}}}
+                placeholder="Stel een vraag over de database…" disabled={loading} rows={2}
+                style={{flex:1,background:"rgba(255,255,255,0.04)",border:"1px solid #1f2937",borderRadius:"10px",padding:"10px 12px",color:"#e5e7eb",fontSize:"12px",resize:"none",outline:"none",lineHeight:"1.5"}}/>
+              <button onClick={()=>send(input)} disabled={loading||!input.trim()}
+                style={{width:"38px",height:"38px",marginTop:"auto",borderRadius:"10px",background:loading||!input.trim()?"#1f2937":"linear-gradient(135deg,#ea580c,#c2410c)",border:"none",cursor:loading?"not-allowed":"pointer",color:"white",fontSize:"18px",flexShrink:0}}>
+                ↑
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* DATABASE VIEW */}
+      {view==="db" && (
+        <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
+          <div style={{padding:"8px 12px",borderBottom:"1px solid #111827",display:"flex",gap:"4px",flexWrap:"wrap"}}>
+            {CLASSES.map(c=>(
+              <button key={c.table} onClick={()=>setTab(c.table)}
+                style={{padding:"4px 12px",borderRadius:"6px 6px 0 0",border:"1px solid",borderColor:tab===c.table?c.color+"88":"#111827",background:tab===c.table?c.color+"15":"transparent",color:tab===c.table?c.color:"#4b5563",fontSize:"11px",cursor:"pointer",fontFamily:"monospace"}}>
+                {c.icon} {c.table}
+              </button>
+            ))}
+            <div style={{marginLeft:"auto",fontSize:"10px",color:"#4b5563",alignSelf:"center",fontFamily:"monospace"}}>
+              {Object.entries(db).map(([t,r])=>`${t}:${r.length}`).join(" · ")}
+            </div>
+          </div>
+          {(() => {
+            const cls = CLASSES.find(c=>c.table===tab);
+            return (
+              <div style={{padding:"12px",borderBottom:"1px solid #111827",background:cls?.color+"11"}}>
+                <span style={{fontFamily:"monospace",fontSize:"11px",color:cls?.color,fontWeight:600}}>{cls?.id}</span>
+                <span style={{fontSize:"10px",color:"#4b5563",marginLeft:"8px"}}>⊂ {cls?.super}</span>
+                <span style={{fontSize:"10px",color:"#374151",marginLeft:"8px"}}>→ db:{tab} (pk:{pkMap[tab]})</span>
+              </div>
+            );
+          })()}
+          <div style={{flex:1,overflowY:"auto",padding:"8px 12px"}}>
+            <DataTable rows={db[tab]} flash={flashMap[tab]||new Set()} pk={pkMap[tab]}/>
+          </div>
+          {traces.length>0&&(
+            <div style={{borderTop:"1px solid #111827",padding:"8px 12px",maxHeight:"180px",overflowY:"auto"}}>
+              <div style={{fontSize:"9px",color:"#4b5563",fontFamily:"monospace",marginBottom:"6px"}}>TOOL TRACES</div>
+              {traces.slice(-5).map((t,i)=>(
+                <div key={i} style={{fontSize:"10px",fontFamily:"monospace",marginBottom:"4px",padding:"6px 10px",background:"rgba(0,0,0,0.4)",borderRadius:"6px",borderLeft:`3px solid ${t.ok?"#22c55e":"#ef4444"}`}}>
+                  <span style={{color:"#f97316"}}>⚡ {t.name}</span>
+                  <span style={{color:"#4b5563",marginLeft:"8px"}}>{JSON.stringify(t.input).slice(0,60)}…</span>
+                  <span style={{color:t.ok?"#4ade80":"#f87171",marginLeft:"8px"}}>{t.ok?"✓":"✗"} {JSON.stringify(t.result).slice(0,60)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ONTOLOGY VIEW */}
+      {view==="onto" && (
+        <div style={{flex:1,overflowY:"auto",padding:"16px"}}>
+          <OntologyGraph active={activeClasses}/>
+          <div style={{marginTop:"12px"}}>
+            <div style={{fontSize:"10px",color:"#4b5563",fontFamily:"monospace",marginBottom:"8px",letterSpacing:"0.1em"}}>OWL KLASSEN (Turtle formaat)</div>
+            <pre style={{background:"#0a0f1a",border:"1px solid #1f2937",borderRadius:"8px",padding:"12px",fontSize:"10px",color:"#9ca3af",fontFamily:"monospace",overflowX:"auto",lineHeight:"1.7"}}>
+{`@prefix vakantie: <https://vakantie.nl/ontology#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+vakantie:Klant a owl:Class ;
+    rdfs:subClassOf foaf:Person ;
+    vakantie:mapsTo "klanten" ;
+    vakantie:primaryKey "klant_id" .
+
+vakantie:Hotel a owl:Class ;
+    rdfs:subClassOf schema:LodgingBusiness ;
+    vakantie:mapsTo "hotels" ;
+    vakantie:primaryKey "hotel_id" .
+
+vakantie:Bestemming a owl:Class ;
+    rdfs:subClassOf schema:Place ;
+    vakantie:mapsTo "bestemmingen" ;
+    vakantie:primaryKey "bestemming_id" .
+
+vakantie:Boeking a owl:Class ;
+    rdfs:subClassOf schema:Reservation ;
+    vakantie:mapsTo "boekingen" ;
+    vakantie:primaryKey "boeking_id" .
+
+vakantie:heeftBoeking a owl:ObjectProperty ;
+    rdfs:domain vakantie:Klant ;
+    rdfs:range vakantie:Boeking ;
+    vakantie:joinOn "klant_id" .
+
+vakantie:isGeboektIn a owl:ObjectProperty ;
+    rdfs:domain vakantie:Boeking ;
+    rdfs:range vakantie:Hotel ;
+    vakantie:joinOn "hotel_id" .
+
+vakantie:isGevestigdIn a owl:ObjectProperty ;
+    rdfs:domain vakantie:Hotel ;
+    rdfs:range vakantie:Bestemming ;
+    vakantie:joinOn "bestemming_id" .`}
+            </pre>
+            <div style={{fontSize:"10px",color:"#4b5563",fontFamily:"monospace",marginTop:"12px",marginBottom:"8px",letterSpacing:"0.1em"}}>AGENT TOOLS (JSON Schema)</div>
+            <div style={{display:"flex",flexDirection:"column",gap:"6px"}}>
+              {TOOLS.map(t=>(
+                <div key={t.name} style={{background:"rgba(249,115,22,0.06)",border:"1px solid rgba(249,115,22,0.2)",borderRadius:"8px",padding:"10px 12px"}}>
+                  <div style={{fontFamily:"monospace",fontSize:"11px",color:"#f97316",fontWeight:600,marginBottom:"3px"}}>⚡ {t.name}</div>
+                  <div style={{fontSize:"10px",color:"#9ca3af"}}>{t.description}</div>
+                  <div style={{fontSize:"9px",color:"#4b5563",marginTop:"4px",fontFamily:"monospace"}}>
+                    required: [{t.input_schema.required.join(", ")}]
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
