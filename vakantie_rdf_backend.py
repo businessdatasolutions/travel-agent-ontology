@@ -98,6 +98,9 @@ vakantie:email a owl:DatatypeProperty ;
 vakantie:loyaltyPunten a owl:DatatypeProperty ;
     rdfs:domain vakantie:Klant ; rdfs:range xsd:integer .
 
+vakantie:hotelId a owl:DatatypeProperty ;
+    rdfs:domain vakantie:Hotel ; rdfs:range xsd:integer .
+
 vakantie:sterren a owl:DatatypeProperty ;
     rdfs:domain vakantie:Hotel ; rdfs:range xsd:integer .
 
@@ -210,6 +213,13 @@ SHACL_TTL = """
 vakantie:BoekingShape a sh:NodeShape ;
     sh:targetClass vakantie:Boeking ;
     sh:property [
+        sh:path [ sh:inversePath vakantie:heeftBoeking ] ;
+        sh:class vakantie:Klant ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:message "Boeking moet gekoppeld zijn aan een Klant via heeftBoeking"@nl ;
+    ] ;
+    sh:property [
         sh:path vakantie:isGeboektIn ;
         sh:class vakantie:Hotel ;
         sh:minCount 1 ;
@@ -280,6 +290,20 @@ vakantie:KlantShape a sh:NodeShape ;
         sh:minCount 1 ;
         sh:message "Klant moet een email hebben"@nl ;
     ] .
+
+# ── Bestemming: verplichte velden ────────────────────────────
+vakantie:BestemmingShape a sh:NodeShape ;
+    sh:targetClass vakantie:Bestemming ;
+    sh:property [
+        sh:path vakantie:naam ;
+        sh:minCount 1 ;
+        sh:message "Bestemming moet een naam hebben"@nl ;
+    ] ;
+    sh:property [
+        sh:path vakantie:land ;
+        sh:minCount 1 ;
+        sh:message "Bestemming moet een land hebben"@nl ;
+    ] .
 """
 
 # ═══════════════════════════════════════════════════════════════
@@ -339,6 +363,7 @@ data:newYork a vakantie:Bestemming ;
 
 # ── Hotels ────────────────────────────────────────────────────
 data:hotel1 a vakantie:Hotel ;
+    vakantie:hotelId 1 ;
     vakantie:naam "Hotel Arts" ;
     vakantie:sterren 5 ;
     vakantie:prijsPerNacht 320 ;
@@ -346,6 +371,7 @@ data:hotel1 a vakantie:Hotel ;
     vakantie:isGevestigdIn data:barcelona .
 
 data:hotel2 a vakantie:Hotel ;
+    vakantie:hotelId 2 ;
     vakantie:naam "Catalonia Square" ;
     vakantie:sterren 4 ;
     vakantie:prijsPerNacht 145 ;
@@ -353,6 +379,7 @@ data:hotel2 a vakantie:Hotel ;
     vakantie:isGevestigdIn data:barcelona .
 
 data:hotel3 a vakantie:Hotel ;
+    vakantie:hotelId 3 ;
     vakantie:naam "COMO Uma Ubud" ;
     vakantie:sterren 5 ;
     vakantie:prijsPerNacht 280 ;
@@ -360,6 +387,7 @@ data:hotel3 a vakantie:Hotel ;
     vakantie:isGevestigdIn data:bali .
 
 data:hotel4 a vakantie:Hotel ;
+    vakantie:hotelId 4 ;
     vakantie:naam "Komaneka at Bisma" ;
     vakantie:sterren 4 ;
     vakantie:prijsPerNacht 195 ;
@@ -367,6 +395,7 @@ data:hotel4 a vakantie:Hotel ;
     vakantie:isGevestigdIn data:bali .
 
 data:hotel5 a vakantie:Hotel ;
+    vakantie:hotelId 5 ;
     vakantie:naam "La Mamounia" ;
     vakantie:sterren 5 ;
     vakantie:prijsPerNacht 410 ;
@@ -374,6 +403,7 @@ data:hotel5 a vakantie:Hotel ;
     vakantie:isGevestigdIn data:marrakech .
 
 data:hotel6 a vakantie:Hotel ;
+    vakantie:hotelId 6 ;
     vakantie:naam "The Plaza" ;
     vakantie:sterren 5 ;
     vakantie:prijsPerNacht 895 ;
@@ -565,6 +595,291 @@ class VakantieTriplestore:
                     }
 
         return {"valid": True}
+
+    # ── Laag 1.5: Automatische verrijking vanuit ontologie ────────
+    def enrich_sparql(self, sparql: str, action_type: str) -> str:
+        """
+        Verrijkt SPARQL INSERT automatisch vanuit de ontologie:
+        1. Ontbrekende relatie-triples (ObjectProperties) injecteren
+        2. Ontbrekende primary keys (auto-increment) toekennen
+
+        Dit maakt het systeem deterministisch — ongeacht wat de LLM genereert,
+        de ontologie-constraints worden altijd nagekomen.
+        """
+        prefix = str(VAKANTIE)
+        action_uri = VAKANTIE[action_type]
+
+        def shorten(uri):
+            s = str(uri)
+            return s.replace(prefix, "") if prefix in s else s
+
+        # ── Parse de SPARQL ──────────────────────────────────────
+        # Alleen entiteiten uit INSERT DATA blokken zijn echte creaties
+        # (niet uit WHERE of DELETE clauses)
+        insert_match = re.search(r'INSERT\s+DATA\s*\{(.*)\}', sparql, re.DOTALL | re.IGNORECASE)
+        insert_body = insert_match.group(1) if insert_match else ""
+        creation_pattern = r'data:(\w+)\s+a\s+vakantie:(\w+)'
+        creations = re.findall(creation_pattern, insert_body)
+        uri_to_type = {}  # type → local URI
+        type_to_uri = {}  # local URI → type
+        for uri, cls in creations:
+            uri_to_type[cls] = uri
+            type_to_uri[uri] = cls
+
+        # Voor gerefereerde URIs: zoek hun type op in de graph
+        all_data_uris = set(re.findall(r'data:(\w+)', sparql))
+        created_uris = set(uri_to_type.values())
+        for local_name in all_data_uris - created_uris:
+            full_uri = URIRef(str(DATA) + local_name)
+            for rdf_type in self.graph.objects(full_uri, RDF.type):
+                type_name = shorten(rdf_type)
+                if type_name not in uri_to_type:
+                    uri_to_type[type_name] = local_name
+                    type_to_uri[local_name] = type_name
+
+        # ── 1. Auto-increment primary keys ───────────────────────
+        # Net als een relationele database: het systeem kent IDs toe,
+        # niet de gebruiker of de LLM. Agent-gegenereerde IDs worden vervangen.
+        for uri, cls in creations:
+            cls_uri = VAKANTIE[cls]
+            pk_values = list(self.graph.objects(cls_uri, VAKANTIE["primaryKey"]))
+            if not pk_values:
+                continue
+            pk_column = str(pk_values[0])  # bijv. "klant_id"
+            pk_prop = pk_column.replace("_i", "I").replace("_", "")  # klant_id → klantId
+
+            # Alleen auto-ID als de DatatypeProperty in de ontologie bestaat
+            if (VAKANTIE[pk_prop], RDF.type, OWL.DatatypeProperty) not in self.graph:
+                continue
+
+            # Verwijder een eventueel door de agent meegegeven ID (altijd overschrijven)
+            agent_pk = rf'vakantie:{re.escape(pk_prop)}\s+[^\s;.]+\s*[;.]'
+            sparql = re.sub(agent_pk, '', sparql)
+
+            # Bepaal het volgende ID via auto-increment
+            max_result = self.query(f"""
+                PREFIX vakantie: <{prefix}>
+                SELECT (MAX(?id) AS ?maxId) WHERE {{
+                    ?x a vakantie:{cls} ;
+                       vakantie:{pk_prop} ?id .
+                }}
+            """)
+            max_id = 0
+            if max_result.get("results"):
+                val = max_result["results"][0].get("maxId")
+                if val is not None:
+                    try:
+                        max_id = int(val)
+                    except (ValueError, TypeError):
+                        max_id = 0
+            next_id = max_id + 1
+
+            # Injecteer na "data:uri a vakantie:Type ;"
+            triple = f"\n      vakantie:{pk_prop} {next_id} ;"
+            type_pattern = rf'(data:{re.escape(uri)}\s+a\s+vakantie:{re.escape(cls)}\s*;)'
+            match = re.search(type_pattern, sparql)
+            if match:
+                sparql = sparql[:match.end()] + triple + sparql[match.end():]
+                print(f"  🔢 Auto-ID: data:{uri} vakantie:{pk_prop} {next_id}")
+
+        # ── 2. Ontbrekende relatie-triples injecteren ─────────────
+        creates = {shorten(o) for o in self.graph.objects(action_uri, VAKANTIE["createsType"])}
+        requires = {shorten(o) for o in self.graph.objects(action_uri, VAKANTIE["requiresInput"])}
+
+        if not creates:
+            return sparql
+
+        all_types = creates | requires
+        obj_props = self.graph.query(f"""
+            PREFIX vakantie: <{prefix}>
+            PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+            PREFIX owl: <http://www.w3.org/2002/07/owl#>
+            SELECT ?prop ?domain ?range WHERE {{
+                ?prop a owl:ObjectProperty ;
+                      rdfs:domain ?domain ;
+                      rdfs:range ?range .
+            }}
+        """)
+
+        for row in obj_props:
+            prop = shorten(row.prop)
+            domain = shorten(row.domain)
+            range_ = shorten(row.range)
+
+            if domain not in all_types or range_ not in all_types:
+                continue
+
+            domain_uri = uri_to_type.get(domain)
+            range_uri = uri_to_type.get(range_)
+
+            if not domain_uri or not range_uri:
+                continue
+
+            # Check of de relatie-triple al in de SPARQL staat
+            triple_pattern = rf'data:{re.escape(domain_uri)}\s+vakantie:{re.escape(prop)}\s+data:{re.escape(range_uri)}'
+            if re.search(triple_pattern, sparql):
+                continue
+
+            triple = f"\n      data:{domain_uri} vakantie:{prop} data:{range_uri} ."
+            last_brace = sparql.rfind("}")
+            if last_brace != -1:
+                sparql = sparql[:last_brace] + triple + "\n    " + sparql[last_brace:]
+                print(f"  ⚡ Auto-relatie: data:{domain_uri} vakantie:{prop} data:{range_uri}")
+
+        return sparql
+
+    # ── Laag 2: SPARQL-generatie vanuit ActionType ────────────────
+    def generate_action_sparql(self, action_type: str, params: dict, references: dict = None) -> dict:
+        """
+        Genereert deterministische SPARQL INSERT vanuit een ActionType + parameters.
+        Het systeem leest de ontologie en bouwt de correcte query op.
+
+        Returns: {"sparql": "...", "uri": "data:...", "action_type": "..."} of {"error": "..."}
+        """
+        import uuid
+        prefix = str(VAKANTIE)
+        action_uri = VAKANTIE[action_type]
+        references = references or {}
+
+        def shorten(uri):
+            s = str(uri)
+            return s.replace(prefix, "") if prefix in s else s
+
+        # 1. Lees ActionType metadata
+        creates_list = [shorten(o) for o in self.graph.objects(action_uri, VAKANTIE["createsType"])]
+        requires_list = [shorten(o) for o in self.graph.objects(action_uri, VAKANTIE["requiresInput"])]
+
+        if not creates_list:
+            return {"error": f"ActionType {action_type} heeft geen createsType"}
+
+        target_class = creates_list[0]  # bijv. "Boeking"
+        target_class_uri = VAKANTIE[target_class]
+
+        # 2. Genereer URI
+        short_uuid = str(uuid.uuid4())[:8]
+        entity_uri = f"{target_class.lower()}_{short_uuid}"
+
+        # 3. Auto-increment primary key
+        pk_values = list(self.graph.objects(target_class_uri, VAKANTIE["primaryKey"]))
+        pk_triple = ""
+        if pk_values:
+            pk_column = str(pk_values[0])
+            pk_prop = pk_column.replace("_i", "I").replace("_", "")
+            if (VAKANTIE[pk_prop], RDF.type, OWL.DatatypeProperty) in self.graph:
+                max_result = self.query(f"""
+                    PREFIX vakantie: <{prefix}>
+                    SELECT (MAX(?id) AS ?maxId) WHERE {{
+                        ?x a vakantie:{target_class} ;
+                           vakantie:{pk_prop} ?id .
+                    }}
+                """)
+                max_id = 0
+                if max_result.get("results"):
+                    val = max_result["results"][0].get("maxId")
+                    if val is not None:
+                        try:
+                            max_id = int(val)
+                        except (ValueError, TypeError):
+                            pass
+                pk_triple = f"\n    vakantie:{pk_prop} {max_id + 1} ;"
+
+        # 4. Lees DatatypeProperties voor deze klasse (inclusief domain-loze zoals 'naam')
+        props_raw = self.query(f"""
+            PREFIX vakantie: <{prefix}>
+            PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+            PREFIX owl: <http://www.w3.org/2002/07/owl#>
+            SELECT ?prop ?range WHERE {{
+                ?prop a owl:DatatypeProperty .
+                OPTIONAL {{ ?prop rdfs:domain ?domain }}
+                OPTIONAL {{ ?prop rdfs:range ?range }}
+                FILTER(!BOUND(?domain) || ?domain = vakantie:{target_class})
+            }}
+        """)
+
+        # Bouw property triples op
+        prop_triples = []
+        for row in props_raw.get("results", []):
+            prop_name = shorten(row["prop"]).replace("vakantie:", "")
+            range_type = shorten(row.get("range", "string"))
+
+            # Skip primary key (al afgehandeld)
+            if pk_values and prop_name == pk_column.replace("_i", "I").replace("_", ""):
+                continue
+
+            value = params.get(prop_name)
+            if value is None:
+                # Default waarden voor ontbrekende properties
+                if "integer" in range_type.lower():
+                    value = 0
+                else:
+                    continue  # Skip optionele string-properties zonder waarde
+
+            # Format de waarde met het juiste XSD type
+            if "integer" in range_type.lower():
+                prop_triples.append(f"    vakantie:{prop_name} {int(value)} ;")
+            elif "decimal" in range_type.lower():
+                prop_triples.append(f'    vakantie:{prop_name} "{value}"^^xsd:decimal ;')
+            elif "date" in range_type.lower():
+                prop_triples.append(f'    vakantie:{prop_name} "{value}"^^xsd:date ;')
+            else:
+                prop_triples.append(f'    vakantie:{prop_name} "{value}" ;')
+
+        # 5. ObjectProperty triples vanuit references en ontologie
+        relation_triples = []
+        obj_props = self.graph.query(f"""
+            PREFIX vakantie: <{prefix}>
+            PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+            PREFIX owl: <http://www.w3.org/2002/07/owl#>
+            SELECT ?prop ?domain ?range WHERE {{
+                ?prop a owl:ObjectProperty ;
+                      rdfs:domain ?domain ;
+                      rdfs:range ?range .
+            }}
+        """)
+
+        for row in obj_props:
+            prop = shorten(row.prop)
+            domain = shorten(row.domain)
+            range_ = shorten(row.range)
+
+            if domain == target_class and range_ in references:
+                # Forward relatie: nieuwe entiteit → bestaande entiteit
+                ref_uri = references[range_]
+                relation_triples.append(f"    vakantie:{prop} {ref_uri} ;")
+            elif range_ == target_class and domain in references:
+                # Inverse relatie: bestaande entiteit → nieuwe entiteit
+                ref_uri = references[domain]
+                relation_triples.append(f"  {ref_uri} vakantie:{prop} data:{entity_uri} .")
+
+        # 6. Bouw de SPARQL INSERT DATA
+        # Splits forward en inverse triples
+        forward = [t for t in relation_triples if not t.strip().startswith("data:")]
+        inverse = [t for t in relation_triples if t.strip().startswith("data:")]
+
+        lines = [f"INSERT DATA {{"]
+        lines.append(f"  data:{entity_uri} a vakantie:{target_class} ;")
+        if pk_triple:
+            lines.append(pk_triple)
+        lines.extend(prop_triples)
+        lines.extend(forward)
+
+        # Vervang laatste ; door .
+        combined = "\n".join(lines)
+        last_semi = combined.rfind(";")
+        if last_semi != -1:
+            combined = combined[:last_semi] + "." + combined[last_semi+1:]
+
+        # Voeg inverse relaties toe
+        for inv in inverse:
+            combined += "\n" + inv
+
+        combined += "\n}"
+
+        return {
+            "sparql": combined,
+            "uri": f"data:{entity_uri}",
+            "action_type": action_type,
+        }
 
     def _get_preconditions(self, action_type: str) -> list:
         """Lees vakantie:precondition uit de ontologie voor een ActionType."""
@@ -765,7 +1080,7 @@ class VakantieTriplestore:
             for r in readonly_raw.get("results", [])
         ]
 
-        # 3. Klassen-schema (properties per klasse)
+        # 3. Klassen-schema (datatype properties per klasse)
         props_raw = self.query(f"""
             PREFIX vakantie: <{prefix}>
             PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
@@ -786,11 +1101,33 @@ class VakantieTriplestore:
                 "range": shorten(r.get("range", "string")),
             })
 
+        # 4. Relaties (object properties tussen klassen)
+        rels_raw = self.query(f"""
+            PREFIX vakantie: <{prefix}>
+            PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+            PREFIX owl: <http://www.w3.org/2002/07/owl#>
+            SELECT ?prop ?label ?domain ?range WHERE {{
+                ?prop a owl:ObjectProperty ;
+                      rdfs:domain ?domain ;
+                      rdfs:range ?range .
+                OPTIONAL {{ ?prop rdfs:label ?label }}
+            }}
+        """)
+        relations = []
+        for r in rels_raw.get("results", []):
+            relations.append({
+                "property": shorten(r["prop"]),
+                "label": str(r.get("label", shorten(r["prop"]))),
+                "from": shorten(r["domain"]),
+                "to": shorten(r["range"]),
+            })
+
         return {
             "role": role,
             "actions": list(actions.values()),
             "readonly_classes": readonly,
             "class_schema": schema,
+            "relations": relations,
         }
 
 
@@ -823,25 +1160,61 @@ AGENT_TOOLS = [
         }
     },
     {
+        "name": "get_ontology",
+        "description": "Haal de volledige OWL ontologie op als Turtle. Gebruik dit als je onzeker bent over de property namen of klassenstructuur.",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": []
+        }
+    },
+    {
+        "name": "execute_action",
+        "description": """Voer een ontologie-actie uit. Het systeem genereert automatisch de juiste SPARQL.
+        Gebruik dit voor ALLE schrijfacties (aanmaken van entiteiten).
+
+        Voorbeeld — klant aanmaken:
+          action_type: "MaakKlant"
+          params: {"naam": "Anna de Vries", "email": "anna@example.nl"}
+
+        Voorbeeld — boeking aanmaken (met verwijzingen naar bestaande entiteiten):
+          action_type: "MaakBoeking"
+          params: {"checkIn": "2025-07-01", "checkOut": "2025-07-15", "aantalPersonen": 2, "status": "bevestigd", "totaalprijs": 11900}
+          references: {"Klant": "data:klant1", "Hotel": "data:hotel3"}
+
+        Het systeem kent automatisch IDs toe en maakt de juiste relaties aan.
+        Zoek eerst bestaande entiteiten op met sparql_select om de data:-URIs te vinden.
+        """,
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action_type": {
+                    "type": "string",
+                    "description": "ActionType uit de ontologie (MaakBoeking, MaakKlant, MaakHotel, MaakBestemming, AnnuleerBoeking, UpdateLoyalty)"
+                },
+                "params": {
+                    "type": "object",
+                    "description": "Property-waarden voor de nieuwe entiteit, bijv. {\"naam\": \"...\", \"email\": \"...\"}"
+                },
+                "references": {
+                    "type": "object",
+                    "description": "Verwijzingen naar bestaande entiteiten per type, bijv. {\"Klant\": \"data:klant1\", \"Hotel\": \"data:hotel3\"}"
+                }
+            },
+            "required": ["action_type", "params"]
+        }
+    },
+    {
         "name": "sparql_update",
-        "description": """Voer een SPARQL UPDATE (INSERT DATA / DELETE-INSERT) uit.
-        Gebruik voor aanmaken, wijzigen of verwijderen van triples.
-        
-        Voorbeeld INSERT:
-          INSERT DATA {
-            data:boekingX a vakantie:Boeking ;
-              vakantie:status "bevestigd" ;
-              vakantie:totaalprijs 1400 .
-            data:klant1 vakantie:heeftBoeking data:boekingX .
-          }
-        
+        "description": """Voer een vrije SPARQL UPDATE uit. Gebruik ALLEEN voor complexe updates
+        (DELETE-INSERT) die niet via execute_action kunnen. Voor het aanmaken van nieuwe entiteiten:
+        gebruik altijd execute_action.
+
         Voorbeeld DELETE-INSERT (update):
           DELETE { ?boeking vakantie:status ?oudeStatus }
           INSERT { ?boeking vakantie:status "geannuleerd" }
           WHERE  { ?boeking a vakantie:Boeking ; vakantie:status ?oudeStatus .
                    FILTER(?boeking = data:boeking4) }
-        
-        Genereer altijd unieke data: URIs voor nieuwe entiteiten (data:boeking<uuid>).
         """,
         "input_schema": {
             "type": "object",
@@ -852,19 +1225,10 @@ AGENT_TOOLS = [
                 },
                 "action_type": {
                     "type": "string",
-                    "description": "Optioneel: ontologie Action Type voor validatie (MaakBoeking, AnnuleerBoeking, UpdateLoyalty)"
+                    "description": "Optioneel: ontologie Action Type voor validatie"
                 }
             },
             "required": ["sparql"]
-        }
-    },
-    {
-        "name": "get_ontology",
-        "description": "Haal de volledige OWL ontologie op als Turtle. Gebruik dit als je onzeker bent over de property namen of klassenstructuur.",
-        "input_schema": {
-            "type": "object",
-            "properties": {},
-            "required": []
         }
     },
     {
@@ -888,23 +1252,28 @@ AGENT_TOOLS = [
 # ═══════════════════════════════════════════════════════════════
 SYSTEM_PROMPT_GENERIC = """
 Je bent een intelligente database-agent voor Vakantie BV.
-Je communiceert met een RDF triplestore via SPARQL.
+Je communiceert met een RDF triplestore.
 De OWL ontologie is de ENIGE bron van waarheid voor wat je wel en niet mag doen.
 
-## SPARQL
-Gebruik altijd deze PREFIX declaraties:
+## TOOLS
+- **execute_action** — gebruik dit voor ALLE schrijfacties (aanmaken van entiteiten).
+  Het systeem genereert automatisch de juiste SPARQL, IDs en relaties.
+  Zoek eerst bestaande entiteiten op met sparql_select om hun data:-URI te vinden.
+- **sparql_select** — gebruik dit om data op te vragen.
+- **sparql_update** — ALLEEN voor DELETE-INSERT updates (bijv. status wijzigen, loyalty updaten).
+  NIET voor het aanmaken van nieuwe entiteiten — gebruik daarvoor execute_action.
+
+## SPARQL SELECT
 PREFIX vakantie: <https://vakantie.nl/ontology#>
 PREFIX data:     <https://vakantie.nl/data#>
 PREFIX xsd:      <http://www.w3.org/2001/XMLSchema#>
 
-- Multi-hop navigatie: ?klant → ?boeking → ?hotel → ?bestemming
-- Voor nieuwe entiteiten: genereer data:<type><uuid4_eerste_8_chars> als URI
-- Geef ALTIJD action_type mee bij sparql_update
+Multi-hop navigatie: ?klant → ?boeking → ?hotel → ?bestemming
 
 ## GEDRAGSREGELS
 1. Antwoord in het Nederlands
-2. Vraag NOOIT om technische identifiers (klantId, hotel_id, data:-URIs).
-   Zoek entiteiten altijd op naam via SELECT. Genereer IDs zelf.
+2. Vraag NOOIT om technische identifiers (klantId, hotel_id, data:-URIs) aan de gebruiker.
+   Zoek entiteiten op naam via SELECT. Het systeem kent IDs automatisch toe.
 3. Verzin NOOIT waarden voor business-properties (naam, email, datum, prijs)
    die de gebruiker niet heeft opgegeven — VRAAG ernaar.
 4. Als een entiteit niet bestaat en jouw rol die niet mag aanmaken
@@ -913,10 +1282,9 @@ PREFIX xsd:      <http://www.w3.org/2001/XMLSchema#>
 6. Als je onzeker bent over je rechten, gebruik de get_capabilities tool.
 
 ## VALIDATIE
-Het systeem valideert je SPARQL automatisch met twee lagen:
+Het systeem valideert automatisch met twee lagen:
 1. Pre-check: bestaan gerefereerde entiteiten? Mag jouw rol dit?
 2. Post-check: voldoet de graph aan SHACL shapes? (rollback bij fout)
-Foutmeldingen verwijzen naar ontologie-constraints — gebruik ze om je query te corrigeren.
 """
 
 
@@ -955,6 +1323,13 @@ def format_capabilities(caps: dict) -> str:
         for cls, props in sorted(caps["class_schema"].items()):
             prop_list = ", ".join(p["property"] for p in props)
             lines.append(f"- {cls}: {prop_list}")
+
+    # Relaties (object properties)
+    if caps.get("relations"):
+        lines.append("\n### Relaties (object properties — VERPLICHT bij INSERT):")
+        for rel in caps["relations"]:
+            lines.append(f"- {rel['from']} → {rel['property']} → {rel['to']} ({rel['label']})")
+        lines.append("Bij het aanmaken van een Boeking MOET je ook de bijbehorende relatie-triples schrijven.")
 
     return "\n".join(lines)
 
@@ -997,6 +1372,10 @@ class VakantieAgent:
                 print(f"  ✗ Pre-validatie: {pre_check['reason']}")
                 return {"success": False, "error": pre_check["reason"]}
 
+            # ── Laag 1.5: Automatische verrijking (IDs + relaties) ──
+            if action_type:
+                sparql = self.store.enrich_sparql(sparql, action_type)
+
             # ── Snapshot voor rollback ───────────────────────────
             snapshot = self.store.snapshot()
 
@@ -1018,6 +1397,49 @@ class VakantieAgent:
             print(f"  ✓ Geschreven + SHACL valide ({result['triples_total']} triples)")
             return result
         
+        elif tool_name == "execute_action":
+            action_type = tool_input["action_type"]
+            params = tool_input.get("params", {})
+            references = tool_input.get("references", {})
+            print(f"\n  🎯 Execute Action: {action_type}")
+            print(f"     params: {params}")
+            if references:
+                print(f"     references: {references}")
+
+            # Genereer SPARQL vanuit de ontologie
+            gen = self.store.generate_action_sparql(action_type, params, references)
+            if "error" in gen:
+                print(f"  ✗ Generatie: {gen['error']}")
+                return {"success": False, "error": gen["error"]}
+
+            sparql = gen["sparql"]
+            print(f"  📝 Gegenereerde SPARQL:\n{self._indent(sparql)}")
+
+            # Pre-validatie
+            pre_check = self.store.validate_sparql_update(sparql, action_type, self.role)
+            if not pre_check["valid"]:
+                print(f"  ✗ Pre-validatie: {pre_check['reason']}")
+                return {"success": False, "error": pre_check["reason"]}
+
+            # Snapshot + uitvoeren
+            snapshot = self.store.snapshot()
+            result = self.store.update(sparql)
+            if not result["success"]:
+                print(f"  ✗ SPARQL fout: {result.get('error','')}")
+                return result
+
+            # SHACL post-validatie
+            shacl_check = self.store.validate_graph_shacl()
+            if not shacl_check["valid"]:
+                print(f"  ✗ SHACL validatie gefaald — ROLLBACK")
+                for v in shacl_check.get("violations", []):
+                    print(f"    • {v}")
+                self.store.restore(snapshot)
+                return {"success": False, "error": shacl_check["reason"]}
+
+            print(f"  ✓ {action_type} uitgevoerd → {gen['uri']} ({result['triples_total']} triples)")
+            return {"success": True, "uri": gen["uri"], "triples_total": result["triples_total"]}
+
         elif tool_name == "get_ontology":
             print(f"\n  📖 Ontologie opgevraagd")
             return {"ontology": ONTOLOGY_TTL}
@@ -1056,7 +1478,7 @@ class VakantieAgent:
         while True:
             # Retry bij overloaded/rate-limit errors
             import time
-            for attempt in range(3):
+            for attempt in range(6):
                 try:
                     response = self.client.messages.create(
                         model="claude-haiku-4-5-20251001",
@@ -1066,10 +1488,10 @@ class VakantieAgent:
                         messages=self.history,
                     )
                     break
-                except anthropic.APIStatusError:
-                    if attempt < 2:
-                        wait = 2 ** attempt
-                        print(f"  ⏳ API overloaded, retry in {wait}s...")
+                except anthropic.APIStatusError as e:
+                    if attempt < 5:
+                        wait = min(2 ** attempt, 30)
+                        print(f"  ⏳ API error {e.status_code}, retry in {wait}s... (poging {attempt+1}/6)")
                         time.sleep(wait)
                     else:
                         raise
@@ -1183,8 +1605,9 @@ def create_api_server(store: VakantieTriplestore):
         """)
         hotels = store.query("""
             PREFIX vakantie: <https://vakantie.nl/ontology#>
-            SELECT ?naam ?sterren ?prijs ?kamers ?bestemming WHERE {
+            SELECT ?hotel_id ?naam ?sterren ?prijs ?kamers ?bestemming WHERE {
                 ?h a vakantie:Hotel ;
+                   vakantie:hotelId ?hotel_id ;
                    vakantie:naam ?naam ;
                    vakantie:sterren ?sterren ;
                    vakantie:prijsPerNacht ?prijs ;
@@ -1195,7 +1618,7 @@ def create_api_server(store: VakantieTriplestore):
         """)
         boekingen = store.query("""
             PREFIX vakantie: <https://vakantie.nl/ontology#>
-            SELECT ?klant ?hotel ?check_in ?check_out ?personen ?status ?totaalprijs WHERE {
+            SELECT ?klant_id ?klant ?hotel_id ?hotel ?check_in ?check_out ?personen ?status ?totaalprijs WHERE {
                 ?b a vakantie:Boeking ;
                    vakantie:checkIn ?check_in ;
                    vakantie:checkOut ?check_out ;
@@ -1203,8 +1626,10 @@ def create_api_server(store: VakantieTriplestore):
                    vakantie:status ?status ;
                    vakantie:totaalprijs ?totaalprijs ;
                    vakantie:isGeboektIn ?h .
-                ?h vakantie:naam ?hotel .
+                ?h vakantie:naam ?hotel ;
+                   vakantie:hotelId ?hotel_id .
                 ?k vakantie:heeftBoeking ?b ;
+                   vakantie:klantId ?klant_id ;
                    vakantie:naam ?klant .
             }
         """)
