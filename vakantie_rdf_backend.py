@@ -862,13 +862,25 @@ class VakantieAgent:
         self.history.append({"role": "user", "content": user_message})
 
         while True:
-            response = self.client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=2000,
-                system=get_system_prompt(self.role),
-                tools=AGENT_TOOLS,
-                messages=self.history,
-            )
+            # Retry bij overloaded/rate-limit errors
+            import time
+            for attempt in range(3):
+                try:
+                    response = self.client.messages.create(
+                        model="claude-haiku-4-5-20251001",
+                        max_tokens=2000,
+                        system=get_system_prompt(self.role),
+                        tools=AGENT_TOOLS,
+                        messages=self.history,
+                    )
+                    break
+                except anthropic.APIStatusError:
+                    if attempt < 2:
+                        wait = 2 ** attempt
+                        print(f"  ⏳ API overloaded, retry in {wait}s...")
+                        time.sleep(wait)
+                    else:
+                        raise
             
             # Verwerk response
             tool_uses = [b for b in response.content if b.type == "tool_use"]
@@ -935,8 +947,13 @@ def create_api_server(store: VakantieTriplestore):
     async def chat_endpoint(req: ChatRequest):
         if req.reset:
             agent.history = []
-        response = agent.chat(req.message, role=req.role)
-        return {"response": response, "role": req.role, "history_length": len(agent.history)}
+        try:
+            response = agent.chat(req.message, role=req.role)
+            return {"response": response, "role": req.role, "history_length": len(agent.history)}
+        except anthropic.APIStatusError:
+            return {"response": "De AI-service is momenteel overbelast. Probeer het over een paar seconden opnieuw.", "role": req.role, "history_length": len(agent.history)}
+        except anthropic.APIError as e:
+            return {"response": f"API fout: {e.message}. Probeer het opnieuw.", "role": req.role, "history_length": len(agent.history)}
     
     @app.post("/sparql/select")
     async def sparql_select(req: SparqlRequest):
