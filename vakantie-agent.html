@@ -7,6 +7,8 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify/dist/purify.min.js"></script>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
   body{background:#060b14;color:#e5e7eb;font-family:'Segoe UI',system-ui,sans-serif;height:100vh;overflow:hidden}
@@ -19,6 +21,20 @@
   button{transition:opacity 0.15s}
   button:hover:not(:disabled){opacity:0.8}
   button:disabled{cursor:not-allowed;opacity:0.5}
+  .md p{margin:0 0 8px 0}.md p:last-child{margin:0}
+  .md strong{color:#f9fafb;font-weight:600}
+  .md em{color:#d1d5db;font-style:italic}
+  .md ul,.md ol{margin:4px 0 8px 18px;padding:0}
+  .md li{margin:2px 0}
+  .md h1,.md h2,.md h3{color:#f9fafb;margin:8px 0 4px 0;font-size:13px;font-weight:700}
+  .md h2{font-size:12px}.md h3{font-size:11px}
+  .md code{background:rgba(249,115,22,0.15);color:#f97316;padding:1px 4px;border-radius:3px;font-size:11px;font-family:monospace}
+  .md pre{background:#0a0f1a;border:1px solid #1f2937;border-radius:6px;padding:8px 10px;margin:6px 0;overflow-x:auto}
+  .md pre code{background:none;padding:0;color:#9ca3af}
+  .md table{border-collapse:collapse;margin:6px 0;font-size:11px;width:100%}
+  .md th,.md td{border:1px solid #1f2937;padding:3px 8px;text-align:left}
+  .md th{background:rgba(249,115,22,0.1);color:#f97316;font-weight:600}
+  .md hr{border:none;border-top:1px solid #1f2937;margin:8px 0}
 </style>
 </head>
 <body>
@@ -287,9 +303,10 @@ function App() {
                 {m.role==="assistant"&&(
                   <div style={{width:"28px",height:"28px",borderRadius:"50%",background:"linear-gradient(135deg,#f97316,#dc2626)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"13px",marginRight:"8px",flexShrink:0,marginTop:"2px"}}>🤖</div>
                 )}
-                <div style={{maxWidth:"80%",padding:"10px 14px",borderRadius:m.role==="user"?"16px 16px 4px 16px":"16px 16px 16px 4px",background:m.role==="user"?"linear-gradient(135deg,#ea580c,#c2410c)":"rgba(255,255,255,0.05)",border:m.role==="user"?"none":"1px solid #1f2937",fontSize:"12px",lineHeight:"1.7",whiteSpace:"pre-wrap"}}>
-                  {m.text}
-                </div>
+                {m.role==="user"
+                  ? <div style={{maxWidth:"80%",padding:"10px 14px",borderRadius:"16px 16px 4px 16px",background:"linear-gradient(135deg,#ea580c,#c2410c)",fontSize:"12px",lineHeight:"1.7",whiteSpace:"pre-wrap"}}>{m.text}</div>
+                  : <div className="md" style={{maxWidth:"80%",padding:"10px 14px",borderRadius:"16px 16px 16px 4px",background:"rgba(255,255,255,0.05)",border:"1px solid #1f2937",fontSize:"12px",lineHeight:"1.7"}} dangerouslySetInnerHTML={{__html:DOMPurify.sanitize(marked.parse(m.text))}}/>
+                }
               </div>
             ))}
             {loading&&(
