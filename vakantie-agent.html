@@ -26,13 +26,13 @@
   .md em{color:#d1d5db;font-style:italic}
   .md ul,.md ol{margin:4px 0 8px 18px;padding:0}
   .md li{margin:2px 0}
-  .md h1,.md h2,.md h3{color:#f9fafb;margin:8px 0 4px 0;font-size:13px;font-weight:700}
-  .md h2{font-size:12px}.md h3{font-size:11px}
-  .md code{background:rgba(249,115,22,0.15);color:#f97316;padding:1px 4px;border-radius:3px;font-size:11px;font-family:monospace}
+  .md h1,.md h2,.md h3{color:#f9fafb;margin:8px 0 4px 0;font-size:18px;font-weight:700}
+  .md h2{font-size:17px}.md h3{font-size:16px}
+  .md code{background:rgba(249,115,22,0.15);color:#f97316;padding:1px 4px;border-radius:3px;font-size:14px;font-family:monospace}
   .md pre{background:#0a0f1a;border:1px solid #1f2937;border-radius:6px;padding:8px 10px;margin:6px 0;overflow-x:auto}
   .md pre code{background:none;padding:0;color:#9ca3af}
-  .md table{border-collapse:collapse;margin:6px 0;font-size:11px;width:100%}
-  .md th,.md td{border:1px solid #1f2937;padding:3px 8px;text-align:left}
+  .md table{border-collapse:collapse;margin:6px 0;font-size:14px;width:100%}
+  .md th,.md td{border:1px solid #1f2937;padding:4px 10px;text-align:left}
   .md th{background:rgba(249,115,22,0.1);color:#f97316;font-weight:600}
   .md hr{border:none;border-top:1px solid #1f2937;margin:8px 0}
 </style>
@@ -43,60 +43,14 @@
 <script type="text/babel">
 const { useState, useRef, useEffect, useCallback } = React;
 
-// ─── DATABASE ───────────────────────────────────────────────
-const createDB = () => ({
-  klanten: [
-    {klant_id:1,naam:"Anna de Vries",email:"anna@example.nl",loyalty_punten:1250,lid_sinds:"2021-03-15"},
-    {klant_id:2,naam:"Pieter Janssen",email:"pieter@example.nl",loyalty_punten:340,lid_sinds:"2023-06-01"},
-    {klant_id:3,naam:"Sofia Martins",email:"sofia@example.nl",loyalty_punten:2870,lid_sinds:"2019-11-20"},
-    {klant_id:4,naam:"Lars van den Berg",email:"lars@example.nl",loyalty_punten:0,lid_sinds:"2024-01-10"},
-  ],
-  bestemmingen: [
-    {bestemming_id:1,naam:"Barcelona",land:"Spanje",klimaat:"Mediterraan",score:9.2},
-    {bestemming_id:2,naam:"Bali",land:"Indonesië",klimaat:"Tropisch",score:9.5},
-    {bestemming_id:3,naam:"Marrakech",land:"Marokko",klimaat:"Droog",score:8.7},
-    {bestemming_id:4,naam:"New York",land:"USA",klimaat:"Gematigd",score:9.0},
-  ],
-  hotels: [
-    {hotel_id:1,naam:"Hotel Arts",bestemming_id:1,sterren:5,prijs:320,kamers:12},
-    {hotel_id:2,naam:"Catalonia Square",bestemming_id:1,sterren:4,prijs:145,kamers:8},
-    {hotel_id:3,naam:"COMO Uma Ubud",bestemming_id:2,sterren:5,prijs:280,kamers:6},
-    {hotel_id:4,naam:"Komaneka at Bisma",bestemming_id:2,sterren:4,prijs:195,kamers:15},
-    {hotel_id:5,naam:"La Mamounia",bestemming_id:3,sterren:5,prijs:410,kamers:3},
-    {hotel_id:6,naam:"The Plaza",bestemming_id:4,sterren:5,prijs:895,kamers:20},
-  ],
-  boekingen: [
-    {boeking_id:1,klant_id:1,hotel_id:1,check_in:"2025-07-15",check_out:"2025-07-22",personen:2,status:"bevestigd",prijs:2240},
-    {boeking_id:2,klant_id:3,hotel_id:3,check_in:"2025-08-01",check_out:"2025-08-10",personen:2,status:"bevestigd",prijs:2520},
-    {boeking_id:3,klant_id:2,hotel_id:2,check_in:"2025-06-20",check_out:"2025-06-27",personen:1,status:"geannuleerd",prijs:1015},
-    {boeking_id:4,klant_id:3,hotel_id:6,check_in:"2025-12-26",check_out:"2026-01-02",personen:2,status:"in_behandeling",prijs:6265},
-  ],
-});
-
-// ─── ONTOLOGY META ───────────────────────────────────────────
-const CLASSES = [
-  {id:"vakantie:Klant",     label:"Klant",     icon:"👤",table:"klanten",      pk:"klant_id",     color:"#f97316",super:"foaf:Person"},
-  {id:"vakantie:Bestemming",label:"Bestemming",icon:"🗺️",table:"bestemmingen",pk:"bestemming_id",color:"#22c55e",super:"schema:Place"},
-  {id:"vakantie:Hotel",     label:"Hotel",     icon:"🏨",table:"hotels",       pk:"hotel_id",     color:"#3b82f6",super:"schema:LodgingBusiness"},
-  {id:"vakantie:Boeking",   label:"Boeking",   icon:"📋",table:"boekingen",    pk:"boeking_id",   color:"#a855f7",super:"schema:Reservation"},
-];
-const RELS = [
-  {from:"vakantie:Klant",  to:"vakantie:Boeking",   label:"heeftBoeking"},
-  {from:"vakantie:Boeking",to:"vakantie:Hotel",     label:"isGeboektIn"},
-  {from:"vakantie:Hotel",  to:"vakantie:Bestemming",label:"isGevestigdIn"},
-];
+// ─── UI CONFIG (frontend-only: icons, kleuren, grafiekposities) ──
+const UI_CONFIG = {
+  "vakantie:Klant":      {icon:"👤", color:"#f97316"},
+  "vakantie:Bestemming":  {icon:"🗺️", color:"#22c55e"},
+  "vakantie:Hotel":      {icon:"🏨", color:"#3b82f6"},
+  "vakantie:Boeking":    {icon:"📋", color:"#a855f7"},
+};
 const POS = {"vakantie:Klant":{x:70,y:60},"vakantie:Boeking":{x:200,y:155},"vakantie:Hotel":{x:330,y:60},"vakantie:Bestemming":{x:330,y:240}};
-const PKM = {klanten:"klant_id",bestemmingen:"bestemming_id",hotels:"hotel_id",boekingen:"boeking_id"};
-
-// ─── TOOLS (backend — getoond in ontology view) ─────────────
-const TOOLS = [
-  {name:"sparql_select",description:"Voer een SPARQL SELECT query uit op de RDFLib triplestore. De agent genereert zelf de SPARQL op basis van de ontologie.",
-   input_schema:{type:"object",properties:{sparql:{type:"string"}},required:["sparql"]}},
-  {name:"sparql_update",description:"Voer een SPARQL UPDATE (INSERT/DELETE) uit. Voor aanmaken, wijzigen of verwijderen van triples in de triplestore.",
-   input_schema:{type:"object",properties:{sparql:{type:"string"},action_type:{type:"string"}},required:["sparql"]}},
-  {name:"get_ontology",description:"Haal de volledige OWL ontologie op als Turtle. Gebruik als de agent onzeker is over property namen of klassenstructuur.",
-   input_schema:{type:"object",properties:{},required:[]}},
-];
 
 const QUICK = [
   {label:"📋 Boekingen Sofia",   text:"Wat zijn alle boekingen van Sofia Martins (klant 3)?"},
@@ -107,7 +61,7 @@ const QUICK = [
 ];
 
 // ─── ONTOLOGY GRAPH ──────────────────────────────────────────
-function Graph({active}) {
+function Graph({active, classes, rels}) {
   return (
     <svg viewBox="0 10 400 300" style={{width:"100%",height:"210px"}}>
       <defs>
@@ -118,8 +72,9 @@ function Graph({active}) {
           <path d="M0,0L6,3L0,6Z" fill="#f97316"/>
         </marker>
       </defs>
-      {RELS.map(r=>{
+      {rels.map(r=>{
         const f=POS[r.from],t=POS[r.to];
+        if (!f||!t) return null;
         const dx=t.x-f.x,dy=t.y-f.y,len=Math.sqrt(dx*dx+dy*dy);
         const ux=dx/len,uy=dy/len,pad=30;
         const on=active.has(r.from)||active.has(r.to);
@@ -134,8 +89,9 @@ function Graph({active}) {
           </g>
         );
       })}
-      {CLASSES.map(c=>{
+      {classes.map(c=>{
         const p=POS[c.id],on=active.has(c.id);
+        if (!p) return null;
         return (
           <g key={c.id}>
             <circle cx={p.x} cy={p.y} r={27} fill={on?c.color+"20":"#0f172a"}
@@ -157,10 +113,10 @@ function Graph({active}) {
 
 // ─── DATA TABLE ───────────────────────────────────────────────
 function DataTable({rows,flashSet,pk}) {
-  if (!rows.length) return <div style={{color:"#4b5563",fontSize:"11px",padding:"8px"}}>Leeg</div>;
+  if (!rows.length) return <div style={{color:"#4b5563",fontSize:"14px",padding:"8px"}}>Leeg</div>;
   const cols = Object.keys(rows[0]);
   return (
-    <div style={{overflowX:"auto",fontSize:"10px",fontFamily:"monospace"}}>
+    <div style={{overflowX:"auto",fontSize:"14px",fontFamily:"monospace"}}>
       <table style={{borderCollapse:"collapse",minWidth:"500px",width:"100%"}}>
         <thead>
           <tr style={{borderBottom:"1px solid #1f2937"}}>
@@ -175,7 +131,7 @@ function DataTable({rows,flashSet,pk}) {
                 {cols.map(c=>(
                   <td key={c} style={{padding:"3px 8px",color:c===pk?"#f97316":"#d1d5db",whiteSpace:"nowrap"}}>
                     {c==="status"
-                      ?<span style={{padding:"1px 6px",borderRadius:"12px",fontSize:"9px",background:row[c]==="bevestigd"?"rgba(34,197,94,0.2)":row[c]==="geannuleerd"?"rgba(239,68,68,0.2)":"rgba(234,179,8,0.2)",color:row[c]==="bevestigd"?"#4ade80":row[c]==="geannuleerd"?"#f87171":"#fbbf24"}}>{row[c]}</span>
+                      ?<span style={{padding:"2px 8px",borderRadius:"12px",fontSize:"13px",background:row[c]==="bevestigd"?"rgba(34,197,94,0.2)":row[c]==="geannuleerd"?"rgba(239,68,68,0.2)":"rgba(234,179,8,0.2)",color:row[c]==="bevestigd"?"#4ade80":row[c]==="geannuleerd"?"#f87171":"#fbbf24"}}>{row[c]}</span>
                       :c==="sterren"?"★".repeat(row[c])
                       :c==="prijs"||c==="loyalty_punten"?`€${Number(row[c]).toLocaleString("nl-NL")}`
                       :String(row[c])}
@@ -192,9 +148,15 @@ function DataTable({rows,flashSet,pk}) {
 
 // ─── MAIN APP ────────────────────────────────────────────────
 function App() {
-  const [db, setDb] = useState(createDB());
+  const [db, setDb] = useState({klanten:[],bestemmingen:[],hotels:[],boekingen:[]});
   const dbRef = useRef(db);
   useEffect(()=>{dbRef.current=db;},[db]);
+
+  const [classes, setClasses] = useState([]);
+  const [rels, setRels] = useState([]);
+  const [tools, setTools] = useState([]);
+  const [turtle, setTurtle] = useState("");
+  const [metaLoaded, setMetaLoaded] = useState(false);
 
   const [tab, setTab] = useState("klanten");
   const [flashMap, setFlashMap] = useState({});
@@ -211,8 +173,13 @@ function App() {
 
   useEffect(()=>{chatEnd.current?.scrollIntoView({behavior:"smooth"});},[msgs,loading]);
 
+  // Helper: zoek klasse op tabelnaam (vervangt globale CLASSES lookup)
+  const findClassByTable = useCallback((table) => classes.find(c=>c.table===table), [classes]);
+  // Helper: primary key per tabel (vervangt globale PKM)
+  const getPk = useCallback((table) => { const c = findClassByTable(table); return c ? c.pk : null; }, [findClassByTable]);
+
   const flash = useCallback((table, pks) => {
-    const cls = CLASSES.find(c=>c.table===table);
+    const cls = findClassByTable(table);
     if (cls) {
       setActiveC(p=>new Set([...p,cls.id]));
       setTimeout(()=>setActiveC(p=>{const n=new Set(p);n.delete(cls.id);return n;}),2000);
@@ -220,7 +187,7 @@ function App() {
     setTab(table);
     setFlashMap(p=>({...p,[table]:new Set(pks)}));
     setTimeout(()=>setFlashMap(p=>({...p,[table]:new Set()})),2500);
-  },[]);
+  },[findClassByTable]);
 
   const API_BASE = "http://localhost:8000";
 
@@ -235,7 +202,23 @@ function App() {
     } catch(e) { console.warn("State refresh failed:", e); }
   };
 
-  useEffect(() => { refreshState(); }, []);
+  // Haal ontologie-metadata, Turtle en data op bij opstart
+  useEffect(() => {
+    Promise.all([
+      fetch(`${API_BASE}/ontology/meta`).then(r=>r.ok?r.json():null),
+      fetch(`${API_BASE}/graph/turtle`).then(r=>r.ok?r.json():null),
+      fetch(`${API_BASE}/state`).then(r=>r.ok?r.json():null),
+    ]).then(([meta, ttl, state]) => {
+      if (meta) {
+        setClasses(meta.classes.map(c=>({...c, ...(UI_CONFIG[c.id]||{icon:"?",color:"#6b7280"})})));
+        setRels(meta.relationships);
+        setTools(meta.tools);
+      }
+      if (ttl) setTurtle(ttl.turtle || "");
+      if (state) { setDb(state); dbRef.current = state; }
+      setMetaLoaded(true);
+    }).catch(e => { console.warn("Init fetch failed:", e); setMetaLoaded(true); });
+  }, []);
 
   const send = async(text) => {
     if (!text.trim() || loading) return;
@@ -257,29 +240,29 @@ function App() {
 
   const S = { // shared styles
     panel: {flex:1,display:"flex",flexDirection:"column",overflow:"hidden"},
-    hdr: {padding:"8px 14px",borderBottom:"1px solid #111827",fontSize:"9px",color:"#4b5563",fontFamily:"monospace",letterSpacing:"0.1em"},
+    hdr: {padding:"8px 14px",borderBottom:"1px solid #111827",fontSize:"13px",color:"#4b5563",fontFamily:"monospace",letterSpacing:"0.1em"},
     card: {background:"rgba(255,255,255,0.04)",border:"1px solid #1f2937",borderRadius:"8px",padding:"10px 14px"},
   };
 
   return (
     <div style={{height:"100vh",background:"#060b14",color:"#e5e7eb",display:"flex",flexDirection:"column"}}>
       {/* HEADER */}
-      <div style={{borderBottom:"1px solid #111827",padding:"0 16px",height:"50px",display:"flex",alignItems:"center",gap:"12px",flexShrink:0}}>
-        <span style={{fontSize:"22px"}}>🌊</span>
+      <div style={{borderBottom:"1px solid #111827",padding:"0 16px",height:"56px",display:"flex",alignItems:"center",gap:"12px",flexShrink:0}}>
+        <span style={{fontSize:"26px"}}>🌊</span>
         <div>
-          <div style={{fontSize:"14px",fontWeight:700,color:"#f9fafb"}}>Vakantie BV</div>
-          <div style={{fontSize:"9px",color:"#4b5563",fontFamily:"monospace"}}>ONTOLOGY-DRIVEN AGENT · RDFLib + SPARQL</div>
+          <div style={{fontSize:"18px",fontWeight:700,color:"#f9fafb"}}>Vakantie BV</div>
+          <div style={{fontSize:"13px",color:"#4b5563",fontFamily:"monospace"}}>ONTOLOGY-DRIVEN AGENT · RDFLib + SPARQL</div>
         </div>
         <div style={{marginLeft:"auto",display:"flex",gap:"6px",alignItems:"center"}}>
           <div style={{display:"flex",borderRadius:"20px",border:"1px solid #1f2937",overflow:"hidden",marginRight:"8px"}}>
             {[{r:"klant",l:"👤 Klant"},{r:"admin",l:"🔧 Admin"}].map(({r,l})=>(
-              <button key={r} onClick={()=>setAgentRole(r)} style={{padding:"4px 10px",border:"none",background:agentRole===r?(r==="admin"?"rgba(239,68,68,0.2)":"rgba(249,115,22,0.15)"):"transparent",color:agentRole===r?(r==="admin"?"#f87171":"#f97316"):"#4b5563",fontSize:"10px",cursor:"pointer",fontFamily:"monospace"}}>
+              <button key={r} onClick={()=>setAgentRole(r)} style={{padding:"5px 12px",border:"none",background:agentRole===r?(r==="admin"?"rgba(239,68,68,0.2)":"rgba(249,115,22,0.15)"):"transparent",color:agentRole===r?(r==="admin"?"#f87171":"#f97316"):"#4b5563",fontSize:"14px",cursor:"pointer",fontFamily:"monospace"}}>
                 {l}
               </button>
             ))}
           </div>
           {[{v:"chat",l:"💬 Agent"},{v:"db",l:"🗄️ Database"},{v:"onto",l:"🕸️ Ontologie"}].map(({v,l})=>(
-            <button key={v} onClick={()=>setView(v)} style={{padding:"4px 12px",borderRadius:"20px",border:`1px solid ${view===v?"#f97316":"#1f2937"}`,background:view===v?"rgba(249,115,22,0.15)":"transparent",color:view===v?"#f97316":"#4b5563",fontSize:"11px",cursor:"pointer"}}>
+            <button key={v} onClick={()=>setView(v)} style={{padding:"5px 14px",borderRadius:"20px",border:`1px solid ${view===v?"#f97316":"#1f2937"}`,background:view===v?"rgba(249,115,22,0.15)":"transparent",color:view===v?"#f97316":"#4b5563",fontSize:"14px",cursor:"pointer"}}>
               {l}
             </button>
           ))}
@@ -292,7 +275,7 @@ function App() {
           <div style={{padding:"8px 12px",borderBottom:"1px solid #111827",display:"flex",flexWrap:"wrap",gap:"4px"}}>
             {QUICK.map(q=>(
               <button key={q.label} onClick={()=>send(q.text)} disabled={loading}
-                style={{padding:"3px 10px",borderRadius:"20px",border:"1px solid #1f2937",background:"rgba(249,115,22,0.07)",color:"#9ca3af",fontSize:"10px",cursor:"pointer",fontFamily:"monospace"}}>
+                style={{padding:"4px 12px",borderRadius:"20px",border:"1px solid #1f2937",background:"rgba(249,115,22,0.07)",color:"#9ca3af",fontSize:"13px",cursor:"pointer",fontFamily:"monospace"}}>
                 {q.label}
               </button>
             ))}
@@ -301,17 +284,17 @@ function App() {
             {msgs.map((m,i)=>(
               <div key={i} style={{display:"flex",justifyContent:m.role==="user"?"flex-end":"flex-start",marginBottom:"12px"}}>
                 {m.role==="assistant"&&(
-                  <div style={{width:"28px",height:"28px",borderRadius:"50%",background:"linear-gradient(135deg,#f97316,#dc2626)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"13px",marginRight:"8px",flexShrink:0,marginTop:"2px"}}>🤖</div>
+                  <div style={{width:"32px",height:"32px",borderRadius:"50%",background:"linear-gradient(135deg,#f97316,#dc2626)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"16px",marginRight:"8px",flexShrink:0,marginTop:"2px"}}>🤖</div>
                 )}
                 {m.role==="user"
-                  ? <div style={{maxWidth:"80%",padding:"10px 14px",borderRadius:"16px 16px 4px 16px",background:"linear-gradient(135deg,#ea580c,#c2410c)",fontSize:"12px",lineHeight:"1.7",whiteSpace:"pre-wrap"}}>{m.text}</div>
-                  : <div className="md" style={{maxWidth:"80%",padding:"10px 14px",borderRadius:"16px 16px 16px 4px",background:"rgba(255,255,255,0.05)",border:"1px solid #1f2937",fontSize:"12px",lineHeight:"1.7"}} dangerouslySetInnerHTML={{__html:DOMPurify.sanitize(marked.parse(m.text))}}/>
+                  ? <div style={{maxWidth:"80%",padding:"10px 14px",borderRadius:"16px 16px 4px 16px",background:"linear-gradient(135deg,#ea580c,#c2410c)",fontSize:"15px",lineHeight:"1.7",whiteSpace:"pre-wrap"}}>{m.text}</div>
+                  : <div className="md" style={{maxWidth:"80%",padding:"10px 14px",borderRadius:"16px 16px 16px 4px",background:"rgba(255,255,255,0.05)",border:"1px solid #1f2937",fontSize:"15px",lineHeight:"1.7"}} dangerouslySetInnerHTML={{__html:DOMPurify.sanitize(marked.parse(m.text))}}/>
                 }
               </div>
             ))}
             {loading&&(
               <div style={{display:"flex",alignItems:"center",gap:"8px",marginBottom:"12px"}}>
-                <div style={{width:"28px",height:"28px",borderRadius:"50%",background:"linear-gradient(135deg,#f97316,#dc2626)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"13px"}}>🤖</div>
+                <div style={{width:"32px",height:"32px",borderRadius:"50%",background:"linear-gradient(135deg,#f97316,#dc2626)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"16px"}}>🤖</div>
                 <div style={{padding:"10px 16px",background:"rgba(255,255,255,0.05)",border:"1px solid #1f2937",borderRadius:"16px 16px 16px 4px",display:"flex",gap:"5px",alignItems:"center"}}>
                   <span className="dot"/><span className="dot"/><span className="dot"/>
                 </div>
@@ -324,7 +307,7 @@ function App() {
               <textarea value={input} onChange={e=>setInput(e.target.value)}
                 onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();send(input);}}}
                 placeholder="Stel een vraag of geef een opdracht…" disabled={loading} rows={2}
-                style={{flex:1,background:"rgba(255,255,255,0.04)",border:"1px solid #1f2937",borderRadius:"10px",padding:"10px 12px",color:"#e5e7eb",fontSize:"12px",resize:"none",lineHeight:"1.5"}}/>
+                style={{flex:1,background:"rgba(255,255,255,0.04)",border:"1px solid #1f2937",borderRadius:"10px",padding:"10px 12px",color:"#e5e7eb",fontSize:"15px",resize:"none",lineHeight:"1.5"}}/>
               <button onClick={()=>send(input)} disabled={loading||!input.trim()}
                 style={{width:"40px",height:"40px",marginTop:"auto",borderRadius:"10px",background:loading||!input.trim()?"#1f2937":"linear-gradient(135deg,#ea580c,#c2410c)",border:"none",cursor:"pointer",color:"white",fontSize:"18px",flexShrink:0}}>
                 ↑
@@ -338,31 +321,31 @@ function App() {
       {view==="db" && (
         <div style={S.panel}>
           <div style={{padding:"8px 12px",borderBottom:"1px solid #111827",display:"flex",gap:"4px",flexWrap:"wrap",alignItems:"center"}}>
-            {CLASSES.map(c=>(
+            {classes.map(c=>(
               <button key={c.table} onClick={()=>setTab(c.table)}
-                style={{padding:"4px 12px",borderRadius:"6px",border:`1px solid ${tab===c.table?c.color+"80":"#1f2937"}`,background:tab===c.table?c.color+"18":"transparent",color:tab===c.table?c.color:"#4b5563",fontSize:"11px",cursor:"pointer",fontFamily:"monospace"}}>
+                style={{padding:"5px 14px",borderRadius:"6px",border:`1px solid ${tab===c.table?c.color+"80":"#1f2937"}`,background:tab===c.table?c.color+"18":"transparent",color:tab===c.table?c.color:"#4b5563",fontSize:"14px",cursor:"pointer",fontFamily:"monospace"}}>
                 {c.icon} {c.table}
               </button>
             ))}
-            <div style={{marginLeft:"auto",fontSize:"9px",color:"#374151",fontFamily:"monospace"}}>
+            <div style={{marginLeft:"auto",fontSize:"12px",color:"#374151",fontFamily:"monospace"}}>
               {Object.entries(db).map(([t,r])=>`${t[0].toUpperCase()}:${(r||[]).length}`).join(" ")}
             </div>
           </div>
           {(() => {
-            const cls = CLASSES.find(c=>c.table===tab);
+            const cls = findClassByTable(tab);
             return (
-              <div style={{padding:"8px 14px",borderBottom:"1px solid #111827",background:cls?.color+"0d",display:"flex",gap:"12px",alignItems:"center"}}>
-                <span style={{fontFamily:"monospace",fontSize:"11px",color:cls?.color,fontWeight:600}}>{cls?.id}</span>
-                <span style={{fontSize:"10px",color:"#4b5563"}}>⊂ {cls?.super}</span>
-                <span style={{fontSize:"10px",color:"#374151"}}>→ db:{tab} · pk:{PKM[tab]}</span>
+              <div style={{padding:"8px 14px",borderBottom:"1px solid #111827",background:(cls?.color||"#6b7280")+"0d",display:"flex",gap:"12px",alignItems:"center"}}>
+                <span style={{fontFamily:"monospace",fontSize:"14px",color:cls?.color,fontWeight:600}}>{cls?.id||tab}</span>
+                <span style={{fontSize:"13px",color:"#4b5563"}}>⊂ {cls?.super||"?"}</span>
+                <span style={{fontSize:"13px",color:"#374151"}}>→ db:{tab} · pk:{getPk(tab)||"?"}</span>
               </div>
             );
           })()}
           <div style={{flex:1,overflowY:"auto",padding:"10px 14px"}}>
-            <DataTable rows={db[tab]||[]} flashSet={flashMap[tab]||new Set()} pk={PKM[tab]}/>
+            <DataTable rows={db[tab]||[]} flashSet={flashMap[tab]||new Set()} pk={getPk(tab)}/>
           </div>
           <div style={{borderTop:"1px solid #111827",padding:"8px 14px"}}>
-            <div style={{fontSize:"9px",color:"#4b5563",fontFamily:"monospace"}}>
+            <div style={{fontSize:"12px",color:"#4b5563",fontFamily:"monospace"}}>
               BRON: RDFLib Triplestore via SPARQL · Data ververst na elke chat interactie
             </div>
           </div>
@@ -372,67 +355,22 @@ function App() {
       {/* ONTOLOGY */}
       {view==="onto" && (
         <div style={{flex:1,overflowY:"auto",padding:"16px"}}>
-          <div style={{fontSize:"10px",color:"#4b5563",fontFamily:"monospace",marginBottom:"8px"}}>OWL KLASSEN GRAAF</div>
+          <div style={{fontSize:"14px",color:"#4b5563",fontFamily:"monospace",marginBottom:"8px"}}>OWL KLASSEN GRAAF</div>
           <div style={{background:"#0a0f1a",border:"1px solid #1f2937",borderRadius:"12px",padding:"12px"}}>
-            <Graph active={activeC}/>
+            <Graph active={activeC} classes={classes} rels={rels}/>
           </div>
-          <div style={{marginTop:"12px",fontSize:"10px",color:"#4b5563",fontFamily:"monospace",marginBottom:"8px"}}>TURTLE SERIALISATIE</div>
-          <pre style={{background:"#0a0f1a",border:"1px solid #1f2937",borderRadius:"8px",padding:"14px",fontSize:"10px",color:"#9ca3af",fontFamily:"monospace",overflowX:"auto",lineHeight:"1.8"}}>
-{`@prefix vakantie: <https://vakantie.nl/ontology#> .
-@prefix owl:      <http://www.w3.org/2002/07/owl#> .
-@prefix rdfs:     <http://www.w3.org/2000/01/rdf-schema#> .
-@prefix foaf:     <http://xmlns.com/foaf/0.1/> .
-@prefix schema:   <https://schema.org/> .
-
-# ── Klassen ──────────────────────────────────────────────
-vakantie:Klant a owl:Class ;
-    rdfs:label "Klant"@nl ;
-    rdfs:subClassOf foaf:Person ;
-    vakantie:mapsTo "klanten" ;
-    vakantie:primaryKey "klant_id" .
-
-vakantie:Hotel a owl:Class ;
-    rdfs:label "Hotel"@nl ;
-    rdfs:subClassOf schema:LodgingBusiness ;
-    vakantie:mapsTo "hotels" ;
-    vakantie:primaryKey "hotel_id" .
-
-vakantie:Bestemming a owl:Class ;
-    rdfs:label "Bestemming"@nl ;
-    rdfs:subClassOf schema:Place ;
-    vakantie:mapsTo "bestemmingen" ;
-    vakantie:primaryKey "bestemming_id" .
-
-vakantie:Boeking a owl:Class ;
-    rdfs:label "Boeking"@nl ;
-    rdfs:subClassOf schema:Reservation ;
-    vakantie:mapsTo "boekingen" ;
-    vakantie:primaryKey "boeking_id" .
-
-# ── Object Properties (relaties) ─────────────────────────
-vakantie:heeftBoeking a owl:ObjectProperty ;
-    rdfs:domain vakantie:Klant ;
-    rdfs:range  vakantie:Boeking ;
-    vakantie:joinOn "klant_id" .
-
-vakantie:isGeboektIn a owl:ObjectProperty ;
-    rdfs:domain vakantie:Boeking ;
-    rdfs:range  vakantie:Hotel ;
-    vakantie:joinOn "hotel_id" .
-
-vakantie:isGevestigdIn a owl:ObjectProperty ;
-    rdfs:domain vakantie:Hotel ;
-    rdfs:range  vakantie:Bestemming ;
-    vakantie:joinOn "bestemming_id" .`}
+          <div style={{marginTop:"12px",fontSize:"14px",color:"#4b5563",fontFamily:"monospace",marginBottom:"8px"}}>TURTLE SERIALISATIE</div>
+          <pre style={{background:"#0a0f1a",border:"1px solid #1f2937",borderRadius:"8px",padding:"14px",fontSize:"13px",color:"#9ca3af",fontFamily:"monospace",overflowX:"auto",lineHeight:"1.8",whiteSpace:"pre-wrap"}}>
+            {turtle || "Laden..."}
           </pre>
-          <div style={{marginTop:"12px",fontSize:"10px",color:"#4b5563",fontFamily:"monospace",marginBottom:"8px"}}>AGENT TOOLS (JSON Schema)</div>
+          <div style={{marginTop:"12px",fontSize:"14px",color:"#4b5563",fontFamily:"monospace",marginBottom:"8px"}}>AGENT TOOLS (JSON Schema)</div>
           <div style={{display:"flex",flexDirection:"column",gap:"6px"}}>
-            {TOOLS.map(t=>(
+            {tools.map(t=>(
               <div key={t.name} style={{background:"rgba(249,115,22,0.06)",border:"1px solid rgba(249,115,22,0.2)",borderRadius:"8px",padding:"10px 14px"}}>
-                <div style={{fontFamily:"monospace",fontSize:"11px",color:"#f97316",fontWeight:600,marginBottom:"3px"}}>⚡ {t.name}()</div>
-                <div style={{fontSize:"10px",color:"#9ca3af",marginBottom:"4px"}}>{t.description}</div>
-                <div style={{fontSize:"9px",color:"#4b5563",fontFamily:"monospace"}}>
-                  required: [{t.input_schema.required.join(", ")}]
+                <div style={{fontFamily:"monospace",fontSize:"14px",color:"#f97316",fontWeight:600,marginBottom:"3px"}}>⚡ {t.name}()</div>
+                <div style={{fontSize:"13px",color:"#9ca3af",marginBottom:"4px",whiteSpace:"pre-wrap"}}>{t.description}</div>
+                <div style={{fontSize:"12px",color:"#4b5563",fontFamily:"monospace"}}>
+                  required: [{(t.input_schema?.required||[]).join(", ")}]
                 </div>
               </div>
             ))}

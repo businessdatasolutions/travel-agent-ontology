@@ -55,19 +55,22 @@ Dit document beschrijft de technische migratie van de Vakantie BV agent-backend 
 │  Python Process (FastAPI + Uvicorn)                   │
 │  ┌─────────────────────────────────────────────────┐ │
 │  │  FastAPI Server                                  │ │
-│  │  ├─ POST /chat     → VakantieAgent.chat()       │ │
-│  │  ├─ GET  /state    → SPARQL queries → JSON      │ │
-│  │  ├─ GET  /health   → {status, triples}          │ │
-│  │  ├─ POST /sparql/* → direct SPARQL              │ │
-│  │  └─ GET  /graph/*  → Turtle dump                │ │
+│  │  ├─ POST /chat            → VakantieAgent.chat() │ │
+│  │  ├─ GET  /state           → SPARQL queries → JSON│ │
+│  │  ├─ GET  /ontology/meta   → klassen, relaties    │ │
+│  │  ├─ GET  /capabilities/:r → compile_capabilities │ │
+│  │  ├─ GET  /graph/turtle    → Turtle dump          │ │
+│  │  ├─ GET  /health          → {status, triples}    │ │
+│  │  └─ POST /sparql/*        → direct SPARQL        │ │
 │  └───────────────┬─────────────────────────────────┘ │
 │                  │                                    │
 │  ┌───────────────▼─────────────────────────────────┐ │
 │  │  VakantieAgent                                   │ │
-│  │  ├─ Anthropic SDK → Claude Sonnet 4             │ │
-│  │  ├─ System prompt (rol-specifiek)                │ │
+│  │  ├─ Anthropic SDK → Claude Haiku 4.5            │ │
+│  │  ├─ System prompt (dynamisch uit ontologie)      │ │
+│  │  │  └─ compile_capabilities(role) → prompt       │ │
 │  │  ├─ Tools: sparql_select, sparql_update,         │ │
-│  │  │         get_ontology                          │ │
+│  │  │         get_ontology, get_capabilities        │ │
 │  │  └─ Conversation history (in-memory)             │ │
 │  └───────────────┬─────────────────────────────────┘ │
 │                  │                                    │
@@ -76,7 +79,8 @@ Dit document beschrijft de technische migratie van de Vakantie BV agent-backend 
 │  │  ├─ OWL Ontologie (klassen, properties, types)  │ │
 │  │  ├─ SHACL Shapes (constraints)                   │ │
 │  │  ├─ Data (klanten, hotels, boekingen, etc.)      │ │
-│  │  ├─ Laag 1: Regex pre-validatie                  │ │
+│  │  ├─ Capability Compiler (SPARQL → rol-rechten)   │ │
+│  │  ├─ Laag 1: Ontologie-gedreven pre-validatie     │ │
 │  │  ├─ Laag 2: SHACL post-validatie + rollback      │ │
 │  │  └─ Snapshot/Restore voor atomiciteit             │ │
 │  └─────────────────────────────────────────────────┘ │
@@ -92,6 +96,17 @@ Dit document beschrijft de technische migratie van de Vakantie BV agent-backend 
 2. **Geen authenticatie** — De rol (klant/admin) wordt als onbeveiligde string parameter meegegeven in de POST body. Elke gebruiker kan zichzelf admin maken.
 3. **Lokale hosting** — De backend draait op `localhost:8000`. Niet bereikbaar buiten het lokale netwerk.
 4. **Gedeelde agent state** — Eén `VakantieAgent` instance voor alle gebruikers. Conversation history wordt gedeeld.
+
+### 2.3 Recente architectuurwijziging: Ontologie-gedreven prompts
+
+Het system prompt wordt niet langer handmatig per rol geschreven. In plaats daarvan:
+
+1. **`compile_capabilities(role)`** bevraagt de ontologie via SPARQL en genereert een gestructureerd overzicht (toegestane acties, read-only klassen, schema).
+2. **`format_capabilities()`** rendert dit als prompt-tekst die dynamisch in het system prompt wordt geïnjecteerd.
+3. **Pre-validatie** leest `vakantie:precondition` generiek uit de ontologie — geen hardcoded business logic meer.
+4. **Frontend** haalt metadata (klassen, relaties, tools, Turtle) dynamisch op via `/ontology/meta` en `/graph/turtle` — geen hardcoded duplicaten meer.
+
+Deze wijziging is **transparant voor de migratie**: de frontend communiceert nog steeds via dezelfde HTTP endpoints, en de ontologie-gedreven logica draait volledig server-side.
 
 ---
 
@@ -117,24 +132,28 @@ Dit document beschrijft de technische migratie van de Vakantie BV agent-backend 
 │  ┌─────────────────────────────────────────────────┐ │
 │  │  Flask App (main.py)                             │ │
 │  │  ├─ Auth middleware (verify ID token)            │ │
-│  │  ├─ POST /api/chat    → agent.chat(msg, role)   │ │
-│  │  ├─ GET  /api/state   → SPARQL → JSON           │ │
-│  │  ├─ GET  /api/health  → status                  │ │
-│  │  └─ POST /api/sparql/* → admin only              │ │
+│  │  ├─ POST /api/chat          → agent.chat()      │ │
+│  │  ├─ GET  /api/state         → SPARQL → JSON     │ │
+│  │  ├─ GET  /api/ontology/meta → klassen/relaties  │ │
+│  │  ├─ GET  /api/capabilities/:role → uit ontologie│ │
+│  │  ├─ GET  /api/health        → status            │ │
+│  │  └─ POST /api/sparql/*      → admin only        │ │
 │  └───────────────┬─────────────────────────────────┘ │
 │                  │                                    │
 │  ┌───────────────▼──────────┐  ┌───────────────────┐ │
 │  │  VakantieAgent           │  │  Firestore         │ │
-│  │  (ongewijzigd)           │  │  ┌───────────────┐ │ │
-│  │  ├─ Anthropic SDK        │  │  │ graphs/main   │ │ │
-│  │  ├─ System prompts       │──│  │ turtle_data   │ │ │
-│  │  └─ on_mutation callback │  │  │ updated_at    │ │ │
-│  └───────────────┬──────────┘  │  │ triple_count  │ │ │
-│                  │             │  └───────────────┘ │ │
+│  │  ├─ Anthropic SDK        │  │  ┌───────────────┐ │ │
+│  │  ├─ Dynamisch prompt uit │  │  │ graphs/main   │ │ │
+│  │  │  compile_capabilities │──│  │ turtle_data   │ │ │
+│  │  ├─ Capability caching   │  │  │ updated_at    │ │ │
+│  │  └─ on_mutation callback │  │  │ triple_count  │ │ │
+│  └───────────────┬──────────┘  │  └───────────────┘ │ │
+│                  │             │                     │ │
 │  ┌───────────────▼──────────┐  └───────────────────┘ │
 │  │  VakantieTriplestore     │                         │
-│  │  (ongewijzigd)           │                         │
 │  │  ├─ RDFLib Graph         │                         │
+│  │  ├─ Capability Compiler  │                         │
+│  │  ├─ Ontologie-validatie  │                         │
 │  │  ├─ SHACL validatie      │                         │
 │  │  └─ Snapshot/Rollback    │                         │
 │  └──────────────────────────┘                         │
@@ -231,9 +250,9 @@ database-ontology-experiment/
 │   ├── main.py                      # Cloud Function entry point (Flask)
 │   ├── requirements.txt             # Python dependencies
 │   ├── ontology_data.py             # ONTOLOGY_TTL, DATA_TTL, SHACL_TTL, namespaces
-│   ├── triplestore.py               # VakantieTriplestore class (ongewijzigd)
-│   ├── agent.py                     # VakantieAgent class (+ on_mutation)
-│   ├── prompts.py                   # AGENT_TOOLS, system prompts
+│   ├── triplestore.py               # VakantieTriplestore + compile_capabilities()
+│   ├── agent.py                     # VakantieAgent (+ capability caching, on_mutation)
+│   ├── prompts.py                   # AGENT_TOOLS, SYSTEM_PROMPT_GENERIC, format_capabilities()
 │   ├── firestore_persistence.py     # save_graph(), load_graph(), initialize_store()
 │   └── auth.py                      # require_auth() decorator
 ├── public/
@@ -243,17 +262,17 @@ database-ontology-experiment/
 
 ### 4.2 Module-mapping vanuit huidige code
 
-De huidige `vakantie_rdf_backend.py` (1071 regels) wordt opgesplitst:
+De huidige `vakantie_rdf_backend.py` wordt opgesplitst:
 
-| Nieuwe module | Bronregels | Lijnen | Wijzigingen |
-|---------------|-----------|--------|-------------|
-| `ontology_data.py` | 40-413 | ~374 | Geen — pure constanten |
-| `triplestore.py` | 419-623 | ~204 | Geen — class ongewijzigd |
-| `prompts.py` | 630-791 | ~162 | Geen — constanten + functie |
-| `agent.py` | 796-899 | ~104 | +`on_mutation` callback |
-| `main.py` | 904-1071 | ~168 | Flask i.p.v. FastAPI + auth |
-| `firestore_persistence.py` | — | ~60 | **Nieuw** |
-| `auth.py` | — | ~30 | **Nieuw** |
+| Nieuwe module | Inhoud | Wijzigingen t.o.v. migratie |
+|---------------|--------|----------------------------|
+| `ontology_data.py` | ONTOLOGY_TTL (incl. mapsTo/primaryKey), DATA_TTL, SHACL_TTL, namespaces | Geen — pure constanten |
+| `triplestore.py` | VakantieTriplestore + compile_capabilities() + ontologie-gedreven validatie | +`on_mutation` callback hook |
+| `prompts.py` | AGENT_TOOLS (4 tools), SYSTEM_PROMPT_GENERIC, format_capabilities(), get_system_prompt(role, caps) | Flask-compatibele imports |
+| `agent.py` | VakantieAgent met capability caching en _ensure_capabilities() | +`on_mutation` callback |
+| `main.py` | Cloud Function entry point (Flask) | Flask i.p.v. FastAPI + auth |
+| `firestore_persistence.py` | save_graph(), load_graph(), initialize_store() | **Nieuw** |
+| `auth.py` | require_auth() decorator | **Nieuw** |
 
 ### 4.3 Firestore Persistence
 
@@ -340,6 +359,7 @@ def chat():
     agent = get_agent()
     if data.get("reset"):
         agent.history = []
+    # Rol komt uit Firebase Auth custom claims (niet uit POST body)
     response = agent.chat(data["message"], role=request.role)
     return jsonify({"response": response, "role": request.role})
 
@@ -348,6 +368,19 @@ def chat():
 def state():
     store = get_store()
     # ... SPARQL queries (ongewijzigd uit huidige code)
+
+@app.route("/api/capabilities/<role>")
+@require_auth
+def capabilities(role):
+    """Ontologie-capabilities voor een rol — gebruikt door frontend ontologie-view."""
+    store = get_store()
+    return jsonify(store.compile_capabilities(role))
+
+@app.route("/api/ontology/meta")
+def ontology_meta():
+    """Ontologie-metadata (klassen, relaties, tools) voor frontend."""
+    store = get_store()
+    # ... SPARQL queries voor klassen, relaties + AGENT_TOOLS
 
 @app.route("/api/health")
 def health():
@@ -398,6 +431,14 @@ def require_auth(f):
 
 ### 4.6 Frontend Wijzigingen
 
+**Huidige staat:** De frontend (`vakantie-agent.html`) haalt alle metadata dynamisch op van de backend:
+- `/ontology/meta` → klassen, relaties, tools (merged met lokale UI_CONFIG voor icons/kleuren)
+- `/graph/turtle` → live Turtle serialisatie voor ontologie-view
+- `/state` → data voor database-view
+- Geen hardcoded database, geen hardcoded ontologie-structuur
+
+Bij de Firebase migratie verandert alleen de **base URL** (van `localhost:8000` naar `/api`) en worden **authenticatie headers** toegevoegd.
+
 #### Firebase SDK toevoegen (in `<head>`):
 
 ```html
@@ -435,7 +476,22 @@ const sendWithAuth = async (url, options = {}) => {
 const tokenResult = await user.getIdTokenResult();
 const role = tokenResult.claims.role || "klant";
 setAgentRole(role);
+// De handmatige klant/admin toggle in de UI wordt verwijderd —
+// de rol is nu bepaald door Firebase Auth custom claims.
 ```
+
+#### API_BASE wijzigen:
+
+```javascript
+// Huidig (lokale ontwikkeling):
+const API_BASE = "http://localhost:8000";
+
+// Firebase Hosting (productie):
+const API_BASE = "/api";
+// Zelfde domein → geen CORS nodig
+```
+
+De drie opstart-fetches (`/ontology/meta`, `/graph/turtle`, `/state`) werken ongewijzigd — alleen de base URL en auth header veranderen.
 
 ---
 
@@ -502,22 +558,31 @@ firebase functions:secrets:set ANTHROPIC_API_KEY
 
 ---
 
-## 6. Ongewijzigde Componenten
+## 6. Component-status bij migratie
 
-De volgende componenten worden **letter-voor-letter** overgenomen uit `vakantie_rdf_backend.py`:
+### 6.1 Ongewijzigd overnemen
 
 | Component | Beschrijving |
 |-----------|-------------|
-| `VakantieTriplestore` | RDFLib Graph met query(), update(), validate_sparql_update(), validate_graph_shacl(), snapshot(), restore() |
-| `ONTOLOGY_TTL` | OWL ontologie: klassen, properties, Action Types met allowedRole |
+| `ONTOLOGY_TTL` | OWL ontologie: klassen (met mapsTo/primaryKey), properties, Action Types met allowedRole, preconditions, sideEffects |
 | `SHACL_TTL` | SHACL shapes voor Boeking, Hotel, Klant |
 | `DATA_TTL` | Initiële dataset: 4 klanten, 4 bestemmingen, 6 hotels, 4 boekingen |
-| `AGENT_TOOLS` | 3 tools: sparql_select, sparql_update, get_ontology |
-| `SYSTEM_PROMPT_BASE/KLANT/ADMIN` | Rol-specifieke instructies |
-| `get_system_prompt()` | Selecteert prompt op basis van rol |
-| Regex pre-validatie | URI-existence check, readOnly check, allowedRole check |
 | SHACL post-validatie | pyshacl validate() met rollback bij falen |
 | `/state` SPARQL queries | 4 SELECT queries die de frontend data opbouwen |
+
+### 6.2 Gewijzigd sinds initieel ontwerp (overnemen in huidige vorm)
+
+Deze componenten zijn gerefactored naar een **ontologie-gedreven architectuur** en moeten in hun huidige vorm overgenomen worden:
+
+| Component | Beschrijving | Wijziging t.o.v. initieel ontwerp |
+|-----------|-------------|-----------------------------------|
+| `VakantieTriplestore` | RDFLib Graph met query(), update(), snapshot(), restore() | +`compile_capabilities(role)`: bevraagt ontologie via SPARQL en genereert gestructureerd overzicht van toegestane acties, read-only klassen en schema per rol. +`_get_preconditions()`, `_evaluate_precondition()`: generieke precondition-evaluatie uit ontologie |
+| `validate_sparql_update()` | Ontologie-gedreven pre-validatie | Leest nu `vakantie:precondition` generiek uit de ontologie i.p.v. hardcoded `if action_type == "MaakBoeking"`. Foutmeldingen verwijzen naar ontologie-constraints (bijv. `vakantie:MaakKlant vakantie:allowedRole`) |
+| `AGENT_TOOLS` | 4 tools: sparql_select, sparql_update, get_ontology, **get_capabilities** | +`get_capabilities`: agent kan ontologie-rechten opvragen als escape hatch |
+| `SYSTEM_PROMPT_GENERIC` | Minimaal generiek prompt | Vervangt de statische `SYSTEM_PROMPT_BASE/KLANT/ADMIN`. Bevat alleen HOE de agent de ontologie moet gebruiken, niet WAT erin staat |
+| `format_capabilities()` | Rendert compile_capabilities() output als prompt-tekst | **Nieuw** — genereert rol-specifiek prompt-blok dynamisch uit ontologie |
+| `get_system_prompt(role, caps)` | Combineert generiek prompt + capabilities | Signature gewijzigd: neemt nu capabilities dict als parameter |
+| `VakantieAgent` | Agent loop met Anthropic SDK | +`_ensure_capabilities()`: cached capabilities per rol. +`get_capabilities` tool handler |
 
 ---
 
@@ -542,10 +607,14 @@ De volgende componenten worden **letter-voor-letter** overgenomen uit `vakantie_
 | 2 | POST `/api/chat` zonder token | 401 Unauthorized |
 | 3 | Login via Firebase Auth UI | Token ontvangen, chat werkt |
 | 4 | Chat: "Toon alle klanten" (rol: klant) | SPARQL SELECT succesvol |
-| 5 | Chat: "Maak klant Witek aan" (rol: klant) | Geblokkeerd door readOnly |
+| 5 | Chat: "Maak klant Witek aan" (rol: klant) | Agent weigert (ontologie: readOnly + niet in toegestane acties). Pre-validatie blokkeert met ontologie-referentie |
 | 6 | Chat: "Maak klant Witek aan" (rol: admin) | Klant aangemaakt, SHACL valide |
-| 7 | Herstart emulator, GET `/api/state` | Data nog aanwezig (Firestore) |
-| 8 | `firebase deploy`, test op live URL | Alles werkt op productie |
+| 7 | GET `/api/capabilities/klant` | JSON met 3 acties (MaakBoeking, AnnuleerBoeking, UpdateLoyalty) + 3 read-only klassen |
+| 8 | GET `/api/capabilities/admin` | JSON met 6 acties (incl. MaakKlant, MaakHotel, MaakBestemming) |
+| 9 | GET `/api/ontology/meta` | Klassen, relaties en tools uit ontologie (frontend metadata) |
+| 10 | Voeg nieuw ActionType toe aan ontologie | Agent ontdekt het automatisch zonder code-wijziging |
+| 11 | Herstart emulator, GET `/api/state` | Data nog aanwezig (Firestore) |
+| 12 | `firebase deploy`, test op live URL | Alles werkt op productie |
 
 ---
 

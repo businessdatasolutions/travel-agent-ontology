@@ -58,23 +58,31 @@ vakantie:Klant a owl:Class ;
     rdfs:label "Klant"@nl ;
     rdfs:subClassOf foaf:Person ;
     vakantie:readOnly true ;
+    vakantie:mapsTo "klanten" ;
+    vakantie:primaryKey "klant_id" ;
     rdfs:comment "Een reizende klant van Vakantie BV — beheerd door administratie"@nl .
 
 vakantie:Hotel a owl:Class ;
     rdfs:label "Hotel"@nl ;
     rdfs:subClassOf schema:LodgingBusiness ;
     vakantie:readOnly true ;
+    vakantie:mapsTo "hotels" ;
+    vakantie:primaryKey "hotel_id" ;
     rdfs:comment "Een accommodatie op een bestemming — beheerd door administratie"@nl .
 
 vakantie:Bestemming a owl:Class ;
     rdfs:label "Bestemming"@nl ;
     rdfs:subClassOf schema:Place ;
     vakantie:readOnly true ;
+    vakantie:mapsTo "bestemmingen" ;
+    vakantie:primaryKey "bestemming_id" ;
     rdfs:comment "Een reisbestemming op de wereld — beheerd door administratie"@nl .
 
 vakantie:Boeking a owl:Class ;
     rdfs:label "Boeking"@nl ;
     rdfs:subClassOf schema:Reservation ;
+    vakantie:mapsTo "boekingen" ;
+    vakantie:primaryKey "boeking_id" ;
     rdfs:comment "Verbindt een Klant met een Hotel voor een periode"@nl .
 
 # ── Datatype Properties ───────────────────────────────────────
@@ -479,15 +487,17 @@ class VakantieTriplestore:
         except Exception as e:
             return {"success": False, "error": str(e)}
     
-    # ── Laag 1: Regex pre-validatie ─────────────────────────────
+    # ── Laag 1: Ontologie-gedreven pre-validatie ─────────────────
     def validate_sparql_update(self, sparql: str, action_type: str = None, role: str = "klant") -> dict:
         """
         Pre-validatie vóór SPARQL uitvoering.
+        Alle checks zijn afgeleid uit de ontologie — geen hardcoded business logic.
+
         Controleert:
-        1. Rol mag dit Action Type gebruiken (via vakantie:allowedRole)
-        2. Gerefereerde entiteiten bestaan in de graph
-        3. Aangemaakte types zijn toegestaan (readOnly check tenzij admin)
-        4. beschikbareKamers > 0 bij MaakBoeking
+        1. vakantie:allowedRole — mag deze rol dit ActionType gebruiken?
+        2. Referentiële integriteit — bestaan gerefereerde entiteiten?
+        3. vakantie:readOnly — mag dit type aangemaakt worden door deze rol?
+        4. vakantie:precondition — voldoen dynamische voorwaarden?
         """
         # Vind entiteiten die worden AANGEMAAKT (data:xxx a vakantie:Yyy)
         creation_pattern = r'data:(\w+)\s+a\s+vakantie:(\w+)'
@@ -501,17 +511,19 @@ class VakantieTriplestore:
         # Gerefereerde URIs = gebruikt maar niet aangemaakt → moeten bestaan
         referenced_uris = all_data_uris - created_uris
 
-        # Check 1: mag deze rol dit Action Type gebruiken?
+        # Check 1: vakantie:allowedRole
         if action_type:
             allowed_roles = self._get_allowed_roles(action_type)
             if allowed_roles and role not in allowed_roles:
                 return {
                     "valid": False,
-                    "reason": f"Rol '{role}' mag Action Type '{action_type}' niet gebruiken. "
-                              f"Toegestane rollen: {', '.join(allowed_roles)}.",
+                    "reason": f"Ontologie-constraint: vakantie:{action_type} heeft "
+                              f"vakantie:allowedRole {sorted(allowed_roles)}. "
+                              f"Huidige rol '{role}' is niet toegestaan.",
+                    "constraint": f"vakantie:{action_type} vakantie:allowedRole",
                 }
 
-        # Check 2: bestaan gerefereerde entiteiten?
+        # Check 2: referentiële integriteit
         missing = []
         for local_name in referenced_uris:
             full_uri = URIRef(str(DATA) + local_name)
@@ -521,43 +533,102 @@ class VakantieTriplestore:
         if missing:
             return {
                 "valid": False,
-                "reason": f"De volgende entiteiten bestaan niet in de database: {', '.join(missing)}. "
-                          f"Doe eerst een SELECT om bestaande entiteiten te vinden, "
-                          f"of vraag de gebruiker om de juiste naam.",
+                "reason": f"Entiteiten niet gevonden: {', '.join(missing)}. "
+                          f"Gebruik SELECT om bestaande entiteiten op te zoeken.",
                 "missing": missing,
             }
 
-        # Check 3: mag dit type aangemaakt worden?
+        # Check 3: vakantie:readOnly
         for created_type in created_types:
             type_uri = VAKANTIE[created_type]
             is_read_only = Literal(True) in self.graph.objects(type_uri, VAKANTIE["readOnly"])
             if is_read_only and role != "admin":
                 return {
                     "valid": False,
-                    "reason": f"'{created_type}' is read-only en kan niet aangemaakt worden "
-                              f"met rol '{role}'. Alleen admins mogen dit type aanmaken.",
+                    "reason": f"Ontologie-constraint: vakantie:{created_type} heeft "
+                              f"vakantie:readOnly true. Rol '{role}' mag dit type niet aanmaken. "
+                              f"Gebruik SELECT om bestaande {created_type}-instanties te vinden.",
+                    "constraint": f"vakantie:{created_type} vakantie:readOnly true",
                 }
 
-        # Check 4: beschikbareKamers bij MaakBoeking
-        if action_type == "MaakBoeking":
-            hotel_refs = re.findall(r'vakantie:isGeboektIn\s+data:(\w+)', sparql)
-            for hotel_local in hotel_refs:
-                hotel_uri = str(DATA) + hotel_local
+        # Check 4: vakantie:precondition (generiek, uit ontologie)
+        if action_type:
+            preconditions = self._get_preconditions(action_type)
+            for precond in preconditions:
+                violation = self._evaluate_precondition(sparql, precond)
+                if violation:
+                    return {
+                        "valid": False,
+                        "reason": f"Ontologie-precondition niet vervuld: "
+                                  f"vakantie:{action_type} vereist \"{precond}\". {violation}",
+                        "constraint": f"vakantie:{action_type} vakantie:precondition \"{precond}\"",
+                    }
+
+        return {"valid": True}
+
+    def _get_preconditions(self, action_type: str) -> list:
+        """Lees vakantie:precondition uit de ontologie voor een ActionType."""
+        action_uri = VAKANTIE[action_type]
+        return [str(obj) for obj in self.graph.objects(action_uri, VAKANTIE["precondition"])]
+
+    def _evaluate_precondition(self, sparql: str, precond: str) -> str | None:
+        """
+        Evalueer een ontologie-precondition tegen de huidige graph state.
+        Ondersteunt het formaat: "propertyNaam > waarde"
+        Retourneert een foutmelding als de precondition niet vervuld is, anders None.
+        """
+        match = re.match(r'(\w+)\s*(>|>=|<|<=|==|!=)\s*(\d+)', precond)
+        if not match:
+            return None  # Onbekend formaat — skip (SHACL vangt het op)
+
+        prop_name, operator, threshold = match.groups()
+        threshold = int(threshold)
+
+        # Zoek de relevante entiteit in de SPARQL: check welk type deze property heeft
+        # via ontologie rdfs:domain lookup
+        domain_result = self.query(f"""
+            PREFIX vakantie: <{str(VAKANTIE)}>
+            PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+            SELECT ?domain WHERE {{
+                vakantie:{prop_name} rdfs:domain ?domain .
+            }}
+        """)
+        if not domain_result.get("results"):
+            return None
+
+        domain_type = str(domain_result["results"][0]["domain"]).replace(str(VAKANTIE), "")
+
+        # Zoek data:-URIs van dit type in de SPARQL (bijv. isGeboektIn data:hotelX → Hotel)
+        # Heuristiek: zoek object properties die naar dit type verwijzen
+        obj_prop_result = self.query(f"""
+            PREFIX vakantie: <{str(VAKANTIE)}>
+            PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+            PREFIX owl: <http://www.w3.org/2002/07/owl#>
+            SELECT ?prop WHERE {{
+                ?prop a owl:ObjectProperty ;
+                      rdfs:range vakantie:{domain_type} .
+            }}
+        """)
+        for row in obj_prop_result.get("results", []):
+            prop_local = str(row["prop"]).replace(str(VAKANTIE), "")
+            # Zoek in de SPARQL naar "vakantie:<prop> data:<entity>"
+            entity_refs = re.findall(rf'vakantie:{prop_local}\s+data:(\w+)', sparql)
+            for entity_local in entity_refs:
+                entity_uri = str(DATA) + entity_local
                 result = self.query(f"""
-                    SELECT ?kamers WHERE {{
-                        <{hotel_uri}> vakantie:beschikbareKamers ?kamers .
+                    SELECT ?val WHERE {{
+                        <{entity_uri}> vakantie:{prop_name} ?val .
                     }}
                 """)
                 if result["success"] and result["results"]:
-                    kamers = int(result["results"][0].get("kamers", 0))
-                    if kamers < 1:
-                        return {
-                            "valid": False,
-                            "reason": f"Hotel data:{hotel_local} heeft geen kamers beschikbaar "
-                                      f"(ontologie constraint: beschikbareKamers > 0).",
-                        }
-
-        return {"valid": True}
+                    val = int(result["results"][0].get("val", 0))
+                    ops = {">": lambda a, b: a > b, ">=": lambda a, b: a >= b,
+                           "<": lambda a, b: a < b, "<=": lambda a, b: a <= b,
+                           "==": lambda a, b: a == b, "!=": lambda a, b: a != b}
+                    if not ops[operator](val, threshold):
+                        return (f"data:{entity_local} heeft {prop_name}={val}, "
+                                f"maar de precondition vereist {prop_name} {operator} {threshold}.")
+        return None
 
     def _get_allowed_creation_types(self, action_type: str) -> set:
         """Lees vakantie:createsType uit de ontologie voor een Action Type."""
@@ -620,6 +691,107 @@ class VakantieTriplestore:
     def dump_turtle(self) -> str:
         """Export huidige state als Turtle — handig voor debugging."""
         return self.graph.serialize(format="turtle")
+
+    # ── Capability Compiler ──────────────────────────────────────
+    def compile_capabilities(self, role: str) -> dict:
+        """
+        Bevraagt de ontologie via SPARQL en genereert een gestructureerd
+        overzicht van wat een rol mag doen. Dit is de brug tussen de
+        OWL ontologie en het agent system prompt.
+        """
+        prefix = str(VAKANTIE)
+
+        def shorten(uri):
+            s = str(uri)
+            return s.replace(prefix, "") if prefix in s else s
+
+        # 1. Toegestane ActionTypes voor deze rol
+        actions_raw = self.query(f"""
+            PREFIX vakantie: <{prefix}>
+            PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+            SELECT ?action ?label ?creates ?modifies ?requires ?precond ?sideEffect ?setsProperty WHERE {{
+                ?action a vakantie:ActionType ;
+                        vakantie:allowedRole "{role}" .
+                OPTIONAL {{ ?action rdfs:label ?label }}
+                OPTIONAL {{ ?action vakantie:createsType ?creates }}
+                OPTIONAL {{ ?action vakantie:modifiesType ?modifies }}
+                OPTIONAL {{ ?action vakantie:requiresInput ?requires }}
+                OPTIONAL {{ ?action vakantie:precondition ?precond }}
+                OPTIONAL {{ ?action vakantie:sideEffect ?sideEffect }}
+                OPTIONAL {{ ?action vakantie:setsProperty ?setsProperty }}
+            }}
+        """)
+
+        # Groepeer per action (SPARQL geeft meerdere rijen bij multi-valued properties)
+        actions = {}
+        for row in actions_raw.get("results", []):
+            name = shorten(row["action"])
+            if name not in actions:
+                actions[name] = {
+                    "name": name,
+                    "label": str(row.get("label", name)),
+                    "creates": set(),
+                    "modifies": set(),
+                    "requires": set(),
+                    "preconditions": set(),
+                    "sideEffects": set(),
+                    "setsProperties": set(),
+                }
+            a = actions[name]
+            if row.get("creates"): a["creates"].add(shorten(row["creates"]))
+            if row.get("modifies"): a["modifies"].add(shorten(row["modifies"]))
+            if row.get("requires"): a["requires"].add(shorten(row["requires"]))
+            if row.get("precond"): a["preconditions"].add(str(row["precond"]))
+            if row.get("sideEffect"): a["sideEffects"].add(str(row["sideEffect"]))
+            if row.get("setsProperty"): a["setsProperties"].add(shorten(row["setsProperty"]))
+
+        # Converteer sets naar lists voor JSON-serialisatie
+        for a in actions.values():
+            for k in ["creates", "modifies", "requires", "preconditions", "sideEffects", "setsProperties"]:
+                a[k] = sorted(a[k])
+
+        # 2. Read-only klassen
+        readonly_raw = self.query(f"""
+            PREFIX vakantie: <{prefix}>
+            PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+            SELECT ?cls ?label WHERE {{
+                ?cls a <http://www.w3.org/2002/07/owl#Class> ;
+                     vakantie:readOnly true .
+                OPTIONAL {{ ?cls rdfs:label ?label }}
+            }}
+        """)
+        readonly = [
+            {"id": shorten(r["cls"]), "label": str(r.get("label", shorten(r["cls"])))}
+            for r in readonly_raw.get("results", [])
+        ]
+
+        # 3. Klassen-schema (properties per klasse)
+        props_raw = self.query(f"""
+            PREFIX vakantie: <{prefix}>
+            PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+            PREFIX owl: <http://www.w3.org/2002/07/owl#>
+            SELECT ?prop ?domain ?range WHERE {{
+                ?prop a owl:DatatypeProperty ;
+                      rdfs:domain ?domain .
+                OPTIONAL {{ ?prop rdfs:range ?range }}
+            }}
+        """)
+        schema = {}
+        for r in props_raw.get("results", []):
+            cls = shorten(r["domain"])
+            if cls not in schema:
+                schema[cls] = []
+            schema[cls].append({
+                "property": shorten(r["prop"]),
+                "range": shorten(r.get("range", "string")),
+            })
+
+        return {
+            "role": role,
+            "actions": list(actions.values()),
+            "readonly_classes": readonly,
+            "class_schema": schema,
+        }
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -694,100 +866,102 @@ AGENT_TOOLS = [
             "properties": {},
             "required": []
         }
+    },
+    {
+        "name": "get_capabilities",
+        "description": "Haal de toegestane acties op voor jouw huidige rol, afgeleid uit de ontologie. "
+                       "Toont welke ActionTypes je mag gebruiken, inclusief precondities, vereiste inputs "
+                       "en read-only klassen. Gebruik dit als je onzeker bent over wat je mag doen.",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": []
+        }
     }
 ]
 
 
 # ═══════════════════════════════════════════════════════════════
-#  SYSTEM PROMPT
-#  Minder data, meer ontologie-structuur
+#  SYSTEM PROMPT — Generiek + dynamisch uit ontologie
+#  De ontologie is de single source of truth. Het prompt vertelt
+#  de agent HOE hij de ontologie moet gebruiken, niet WAT erin staat.
 # ═══════════════════════════════════════════════════════════════
-SYSTEM_PROMPT_BASE = """
+SYSTEM_PROMPT_GENERIC = """
 Je bent een intelligente database-agent voor Vakantie BV.
 Je communiceert met een RDF triplestore via SPARQL.
+De OWL ontologie is de ENIGE bron van waarheid voor wat je wel en niet mag doen.
 
-## ONTOLOGIE NAMESPACES
-- vakantie: <https://vakantie.nl/ontology#>  (klassen, properties, actions)
-- data:     <https://vakantie.nl/data#>       (individuele instanties)
-
-## KLASSEN
-- vakantie:Klant       (foaf:Person)         — klantId, naam, email, loyaltyPunten
-- vakantie:Hotel       (schema:LodgingBusiness) — naam, sterren, prijsPerNacht, beschikbareKamers
-- vakantie:Bestemming  (schema:Place)         — naam, land, klimaat
-- vakantie:Boeking     (schema:Reservation)   — checkIn, checkOut, aantalPersonen, status, totaalprijs
-
-## OBJECT PROPERTIES
-- vakantie:heeftBoeking   : Klant → Boeking
-- vakantie:isGeboektIn    : Boeking → Hotel
-- vakantie:isGevestigdIn  : Hotel → Bestemming
-
-## SPARQL INSTRUCTIES
-1. Gebruik altijd PREFIX declaraties in je queries
-2. Multi-hop navigatie gaat via chaining: ?klant → ?boeking → ?hotel → ?bestemming
-3. Voor nieuwe entiteiten: genereer data:<type><uuid4_eerste_8_chars> als URI
-4. Bij MaakBoeking: doe eerst een SELECT om beschikbareKamers te controleren
-5. Bij schrijven: geef action_type mee zodat ontologie-validatie kan plaatsvinden
-6. Antwoord in het Nederlands
-7. Verzin NOOIT waarden voor properties die de gebruiker niet heeft opgegeven.
-   Als informatie ontbreekt, VRAAG het aan de gebruiker.
-
-SPARQL PREFIX blok (gebruik altijd):
+## SPARQL
+Gebruik altijd deze PREFIX declaraties:
 PREFIX vakantie: <https://vakantie.nl/ontology#>
 PREFIX data:     <https://vakantie.nl/data#>
 PREFIX xsd:      <http://www.w3.org/2001/XMLSchema#>
 
+- Multi-hop navigatie: ?klant → ?boeking → ?hotel → ?bestemming
+- Voor nieuwe entiteiten: genereer data:<type><uuid4_eerste_8_chars> als URI
+- Geef ALTIJD action_type mee bij sparql_update
+
+## GEDRAGSREGELS
+1. Antwoord in het Nederlands
+2. Vraag NOOIT om technische identifiers (klantId, hotel_id, data:-URIs).
+   Zoek entiteiten altijd op naam via SELECT. Genereer IDs zelf.
+3. Verzin NOOIT waarden voor business-properties (naam, email, datum, prijs)
+   die de gebruiker niet heeft opgegeven — VRAAG ernaar.
+4. Als een entiteit niet bestaat en jouw rol die niet mag aanmaken
+   (zie read-only klassen hieronder), leg dit uit en toon bestaande opties.
+5. Controleer altijd precondities vóór een schrijfactie (bijv. beschikbare kamers).
+6. Als je onzeker bent over je rechten, gebruik de get_capabilities tool.
+
 ## VALIDATIE
-Het systeem valideert je SPARQL met twee lagen:
-1. Pre-check: bestaan alle gerefereerde entiteiten? Mag jouw rol dit type aanmaken?
-2. Post-check: voldoet de graph aan SHACL shapes?
-Als een validatie faalt, krijg je een foutmelding — pas je query aan op basis daarvan.
+Het systeem valideert je SPARQL automatisch met twee lagen:
+1. Pre-check: bestaan gerefereerde entiteiten? Mag jouw rol dit?
+2. Post-check: voldoet de graph aan SHACL shapes? (rollback bij fout)
+Foutmeldingen verwijzen naar ontologie-constraints — gebruik ze om je query te corrigeren.
 """
 
-SYSTEM_PROMPT_KLANT = SYSTEM_PROMPT_BASE + """
-## JOUW ROL: KLANT
-Je helpt klanten met boekingen. Je hebt beperkte rechten.
 
-## ACTION TYPES
-- vakantie:MaakBoeking     (action_type: "MaakBoeking")    : maak een boeking aan
-- vakantie:AnnuleerBoeking (action_type: "AnnuleerBoeking"): annuleer een boeking
-- vakantie:UpdateLoyalty   (action_type: "UpdateLoyalty")   : wijzig loyaltypunten
+def format_capabilities(caps: dict) -> str:
+    """Rendert compile_capabilities() output als compacte prompt-tekst."""
+    lines = [f"\n## JOUW ROL: {caps['role'].upper()}"]
 
-## RESTRICTIES
-- Maak NOOIT nieuwe Hotels, Bestemmingen of Klanten aan — deze zijn read-only.
-- Hotel en Klant MOETEN al bestaan. Doe eerst een SELECT om te controleren.
-- Als een hotel niet in het systeem staat, toon de beschikbare hotels.
-- Geef ALTIJD action_type mee bij sparql_update.
-"""
+    # Toegestane acties
+    lines.append("\n### Toegestane acties (uit ontologie ActionTypes):")
+    for a in caps["actions"]:
+        desc = f"- **{a['name']}** ({a['label']})"
+        if a["creates"]:
+            desc += f"\n  Maakt aan: {', '.join(a['creates'])}"
+        if a["modifies"]:
+            desc += f"\n  Wijzigt: {', '.join(a['modifies'])}"
+        if a["setsProperties"]:
+            desc += f" (property: {', '.join(a['setsProperties'])})"
+        if a["requires"]:
+            desc += f"\n  Vereist (moet al bestaan): {', '.join(a['requires'])}"
+        if a["preconditions"]:
+            desc += f"\n  Precondities: {', '.join(a['preconditions'])}"
+        if a["sideEffects"]:
+            desc += f"\n  Bijwerkingen: {'; '.join(a['sideEffects'])}"
+        lines.append(desc)
 
-SYSTEM_PROMPT_ADMIN = SYSTEM_PROMPT_BASE + """
-## JOUW ROL: ADMIN
-Je bent een systeembeheerder. Je mag alle entiteiten aanmaken en wijzigen.
+    # Read-only klassen
+    if caps["readonly_classes"]:
+        ro_names = [r["label"] for r in caps["readonly_classes"]]
+        lines.append(f"\n### Read-only klassen (NIET aanmaken/wijzigen):")
+        lines.append(f"{', '.join(ro_names)}")
+        lines.append("Zoek bestaande instanties via SELECT als de gebruiker naar deze types verwijst.")
 
-## ACTION TYPES
-- vakantie:MaakBoeking     (action_type: "MaakBoeking")      : maak een boeking aan
-- vakantie:AnnuleerBoeking (action_type: "AnnuleerBoeking")   : annuleer een boeking
-- vakantie:UpdateLoyalty   (action_type: "UpdateLoyalty")      : wijzig loyaltypunten
-- vakantie:MaakKlant       (action_type: "MaakKlant")         : maak een nieuwe klant aan
-- vakantie:MaakHotel       (action_type: "MaakHotel")         : maak een nieuw hotel aan (vereist bestaande Bestemming)
-- vakantie:MaakBestemming  (action_type: "MaakBestemming")    : maak een nieuwe bestemming aan
+    # Klassen-schema
+    if caps["class_schema"]:
+        lines.append("\n### Klassen-schema (properties per klasse):")
+        for cls, props in sorted(caps["class_schema"].items()):
+            prop_list = ", ".join(p["property"] for p in props)
+            lines.append(f"- {cls}: {prop_list}")
 
-## VEREISTE VELDEN BIJ AANMAKEN
-- Klant: naam, email, loyaltyPunten (standaard 0), klantId
-- Hotel: naam, sterren, prijsPerNacht, beschikbareKamers, isGevestigdIn (bestaande Bestemming)
-- Bestemming: naam, land, klimaat
-- Boeking: checkIn, checkOut, aantalPersonen, status, totaalprijs, isGeboektIn, heeftBoeking
+    return "\n".join(lines)
 
-## REGELS
-- Verzin NOOIT waarden die de gebruiker niet heeft opgegeven — VRAAG ernaar.
-- Bij MaakHotel: de Bestemming MOET al bestaan (of maak die eerst aan).
-- Geef ALTIJD action_type mee bij sparql_update.
-- Genereer een nieuw klantId (volgnummer) voor nieuwe klanten.
-"""
 
-def get_system_prompt(role: str) -> str:
-    if role == "admin":
-        return SYSTEM_PROMPT_ADMIN
-    return SYSTEM_PROMPT_KLANT
+def get_system_prompt(role: str, capabilities: dict) -> str:
+    """Genereert system prompt dynamisch uit ontologie-capabilities."""
+    return SYSTEM_PROMPT_GENERIC + format_capabilities(capabilities)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -799,6 +973,8 @@ class VakantieAgent:
         self.client = anthropic.Anthropic()
         self.history = []
         self.role = "klant"
+        self._cached_role = None
+        self._capabilities = None
     
     def _execute_tool(self, tool_name: str, tool_input: dict) -> dict:
         """Voert een tool call uit tegen de triplestore."""
@@ -845,16 +1021,32 @@ class VakantieAgent:
         elif tool_name == "get_ontology":
             print(f"\n  📖 Ontologie opgevraagd")
             return {"ontology": ONTOLOGY_TTL}
-        
+
+        elif tool_name == "get_capabilities":
+            self._ensure_capabilities()
+            print(f"\n  📋 Capabilities opgevraagd voor rol '{self.role}'")
+            return self._capabilities
+
         return {"success": False, "error": f"Onbekende tool: {tool_name}"}
     
     def _indent(self, text: str, prefix: str = "    ") -> str:
         return "\n".join(prefix + line for line in text.strip().split("\n"))
     
+    def _ensure_capabilities(self):
+        """Compile capabilities bij rol-wissel of eerste aanroep."""
+        if self._cached_role != self.role:
+            self._capabilities = self.store.compile_capabilities(self.role)
+            self._cached_role = self.role
+            print(f"  📋 Capabilities gecompileerd voor rol '{self.role}': "
+                  f"{len(self._capabilities['actions'])} acties, "
+                  f"{len(self._capabilities['readonly_classes'])} read-only klassen")
+
     def chat(self, user_message: str, role: str = None) -> str:
         """Verwerk een gebruikersbericht via de agent loop."""
         if role:
             self.role = role
+        self._ensure_capabilities()
+
         print(f"\n{'═'*60}")
         print(f"👤 [{self.role.upper()}] Gebruiker: {user_message}")
         print(f"{'═'*60}")
@@ -869,7 +1061,7 @@ class VakantieAgent:
                     response = self.client.messages.create(
                         model="claude-haiku-4-5-20251001",
                         max_tokens=2000,
-                        system=get_system_prompt(self.role),
+                        system=get_system_prompt(self.role, self._capabilities),
                         tools=AGENT_TOOLS,
                         messages=self.history,
                     )
@@ -1026,6 +1218,80 @@ def create_api_server(store: VakantieTriplestore):
     @app.get("/health")
     async def health():
         return {"status": "ok", "triples": len(store.graph)}
+
+    @app.get("/ontology/meta")
+    async def ontology_meta():
+        """Levert ontologie-metadata als JSON voor de frontend: klassen, relaties en tools."""
+        classes_result = store.query("""
+            PREFIX vakantie: <https://vakantie.nl/ontology#>
+            PREFIX owl: <http://www.w3.org/2002/07/owl#>
+            PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+            SELECT ?cls ?label ?super ?table ?pk WHERE {
+                ?cls a owl:Class ;
+                     rdfs:label ?label ;
+                     rdfs:subClassOf ?super ;
+                     vakantie:mapsTo ?table ;
+                     vakantie:primaryKey ?pk .
+            } ORDER BY ?table
+        """)
+        classes = []
+        for row in classes_result.get("results", []):
+            cls_uri = str(row["cls"])
+            prefix = "https://vakantie.nl/ontology#"
+            cls_id = f"vakantie:{cls_uri.replace(prefix, '')}" if prefix in cls_uri else cls_uri
+            super_uri = str(row["super"])
+            super_map = {
+                "http://xmlns.com/foaf/0.1/Person": "foaf:Person",
+                "https://schema.org/LodgingBusiness": "schema:LodgingBusiness",
+                "https://schema.org/Place": "schema:Place",
+                "https://schema.org/Reservation": "schema:Reservation",
+            }
+            classes.append({
+                "id": cls_id,
+                "label": str(row["label"]),
+                "super": super_map.get(super_uri, super_uri),
+                "table": str(row["table"]),
+                "pk": str(row["pk"]),
+            })
+
+        rels_result = store.query("""
+            PREFIX vakantie: <https://vakantie.nl/ontology#>
+            PREFIX owl: <http://www.w3.org/2002/07/owl#>
+            PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+            SELECT ?prop ?domain ?range ?label WHERE {
+                ?prop a owl:ObjectProperty ;
+                      rdfs:domain ?domain ;
+                      rdfs:range ?range .
+                OPTIONAL { ?prop rdfs:label ?label }
+            }
+        """)
+        prefix = "https://vakantie.nl/ontology#"
+        prefix_short = "vakantie:"
+        relationships = []
+        for row in rels_result.get("results", []):
+            prop_uri = str(row["prop"])
+            prop_name = prop_uri.replace(prefix, "").replace(prefix_short, "")
+            from_uri = str(row["domain"])
+            to_uri = str(row["range"])
+            relationships.append({
+                "from": f"vakantie:{from_uri.replace(prefix, '')}" if prefix in from_uri else from_uri,
+                "to": f"vakantie:{to_uri.replace(prefix, '')}" if prefix in to_uri else to_uri,
+                "label": prop_name,
+            })
+
+        tools = [{
+            "name": t["name"],
+            "description": t["description"].strip(),
+            "input_schema": t["input_schema"],
+        } for t in AGENT_TOOLS]
+
+        return {"classes": classes, "relationships": relationships, "tools": tools}
+
+    @app.get("/capabilities/{role}")
+    async def capabilities_endpoint(role: str):
+        """Levert ontologie-capabilities voor een rol als JSON."""
+        caps = store.compile_capabilities(role)
+        return caps
 
     return app
 
