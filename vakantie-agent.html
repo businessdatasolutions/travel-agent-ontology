@@ -168,7 +168,7 @@ function App() {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [view, setView] = useState("chat");
-  const [agentRole, setAgentRole] = useState("klant");
+  const [agentRole, setAgentRole] = useState("reisagent");
   const chatEnd = useRef(null);
 
   useEffect(()=>{chatEnd.current?.scrollIntoView({behavior:"smooth"});},[msgs,loading]);
@@ -255,7 +255,7 @@ function App() {
         </div>
         <div style={{marginLeft:"auto",display:"flex",gap:"6px",alignItems:"center"}}>
           <div style={{display:"flex",borderRadius:"20px",border:"1px solid #1f2937",overflow:"hidden",marginRight:"8px"}}>
-            {[{r:"klant",l:"👤 Klant"},{r:"admin",l:"🔧 Admin"}].map(({r,l})=>(
+            {[{r:"reisagent",l:"👤 Reisagent"},{r:"admin",l:"🔧 Admin"}].map(({r,l})=>(
               <button key={r} onClick={()=>setAgentRole(r)} style={{padding:"5px 12px",border:"none",background:agentRole===r?(r==="admin"?"rgba(239,68,68,0.2)":"rgba(249,115,22,0.15)"):"transparent",color:agentRole===r?(r==="admin"?"#f87171":"#f97316"):"#4b5563",fontSize:"14px",cursor:"pointer",fontFamily:"monospace"}}>
                 {l}
               </button>

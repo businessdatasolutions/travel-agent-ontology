@@ -157,7 +157,7 @@ vakantie:MaakBoeking a vakantie:ActionType ;
     vakantie:createsType vakantie:Boeking ;
     vakantie:requiresInput vakantie:Klant ;
     vakantie:requiresInput vakantie:Hotel ;
-    vakantie:allowedRole "klant" ;
+    vakantie:allowedRole "reisagent" ;
     vakantie:allowedRole "admin" ;
     vakantie:precondition "beschikbareKamers > 0" ;
     vakantie:sideEffect "beschikbareKamers - 1" ;
@@ -167,7 +167,7 @@ vakantie:AnnuleerBoeking a vakantie:ActionType ;
     rdfs:label "Annuleer Boeking"@nl ;
     vakantie:modifiesType vakantie:Boeking ;
     vakantie:setsProperty vakantie:status ;
-    vakantie:allowedRole "klant" ;
+    vakantie:allowedRole "reisagent" ;
     vakantie:allowedRole "admin" ;
     vakantie:sideEffect "beschikbareKamers + 1" .
 
@@ -175,7 +175,7 @@ vakantie:UpdateLoyalty a vakantie:ActionType ;
     rdfs:label "Update Loyalty Punten"@nl ;
     vakantie:modifiesType vakantie:Klant ;
     vakantie:setsProperty vakantie:loyaltyPunten ;
-    vakantie:allowedRole "klant" ;
+    vakantie:allowedRole "reisagent" ;
     vakantie:allowedRole "admin" .
 
 # ── Admin-only Action Types ──────────────────────────────────
@@ -518,7 +518,7 @@ class VakantieTriplestore:
             return {"success": False, "error": str(e)}
     
     # ── Laag 1: Ontologie-gedreven pre-validatie ─────────────────
-    def validate_sparql_update(self, sparql: str, action_type: str = None, role: str = "klant") -> dict:
+    def validate_sparql_update(self, sparql: str, action_type: str = None, role: str = "reisagent") -> dict:
         """
         Pre-validatie vóór SPARQL uitvoering.
         Alle checks zijn afgeleid uit de ontologie — geen hardcoded business logic.
@@ -1347,7 +1347,7 @@ class VakantieAgent:
         self.store = triplestore
         self.client = anthropic.Anthropic()
         self.history = []
-        self.role = "klant"
+        self.role = "reisagent"
         self._cached_role = None
         self._capabilities = None
     
@@ -1551,7 +1551,7 @@ def create_api_server(store: VakantieTriplestore):
     
     class ChatRequest(BaseModel):
         message: str
-        role: str = "klant"
+        role: str = "reisagent"
         reset: bool = False
 
     class SparqlRequest(BaseModel):
